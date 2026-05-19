@@ -1,0 +1,17 @@
+name: rivmapper_v2
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - geopandas
+  - rasterio
+  - numpy
+  - pandas
+  - matplotlib
+  - scipy
+  - jupyterlab
+  - ipywidgets
+  - pip
+  - pip:
+      - -e ".[dev]"

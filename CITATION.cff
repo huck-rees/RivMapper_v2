@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "RivMapper v2"
+authors:
+  - family-names: "Rees"
+    given-names: "James"
+    alias: "Huck"
+license: MIT
+repository-code: "https://github.com/huck-rees/RivMapper_v2"
+abstract: >-
+  Next-generation channel mobility, sediment storage, and transit time
+  analysis for alluvial rivers.
+# TODO: Add version, doi, and date-released once published
