@@ -12,6 +12,11 @@ dependencies:
   - scipy
   - jupyterlab
   - ipywidgets
+  - geemap
+  - earthengine-api
+  - ipyleaflet
+  - pyogrio
+  - tqdm
   - pip
   - pip:
       - -e ".[dev]"
