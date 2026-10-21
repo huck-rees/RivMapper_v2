@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rivmapper_v2"
-version = "0.1.0"
+version = "0.2.0"
 description = "Next-generation channel mobility, sediment storage, and transit time analysis for alluvial rivers."
 readme = "README.md"
 license = "MIT"
@@ -13,13 +13,22 @@ authors = [
     { name = "James \"Huck\" Rees" },
 ]
 dependencies = [
-    "geopandas",
+    "geopandas>=0.14",
+    "shapely>=2.0",
+    "pyogrio>=0.7",
     "rasterio",
     "numpy",
-    "pandas",
+    "pandas>=2.1",
     "matplotlib",
     "scipy",
+    "pydantic>=2.5",
+    "pyyaml",
+    "requests",
+    "tqdm",
 ]
+
+[project.scripts]
+rivmapper = "rivmapper_v2.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -33,6 +42,9 @@ include = ["rivmapper_v2*"]
 [tool.ruff]
 target-version = "py311"
 line-length = 88
+
+[tool.ruff.lint.per-file-ignores]
+"rivmapper_v2/templates.py" = ["E501"]  # YAML template text
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

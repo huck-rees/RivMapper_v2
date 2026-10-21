@@ -1,0 +1,54 @@
+# RivMapper v2 project configuration
+# ────────────────────────────────────────────────────────────────────
+# Settings here apply to every river in the rivers table. Any setting in
+# the `reaches:` or `masks:` sections can be overridden for one river by
+# adding a column with the same name to the rivers table; blank cells use
+# the value below. Relative paths are relative to this file.
+#
+# Check it:  rivmapper validate rivmapper.yaml
+# Run it:    rivmapper run rivmapper.yaml [--steps sword,reaches] [--rivers Beni]
+
+# Outputs go under this folder (SWORD/, RiverMapping/, ...).
+data_root: ./output
+
+# One row per river: river_name, sword_cont_abb, us_sword_reach_id,
+# ds_sword_reach_id, plus any per-river overrides.
+rivers_table: rivers.csv
+
+# Rebuild outputs even if they already exist (CLI: --overwrite).
+overwrite: false
+
+sword:
+  version: v17b
+  # Folder with the continental SWORD geopackages. null = {data_root}/SWORD.
+  # Downloaded from Zenodo (~2 GB, all continents) on first use.
+  dir: ../../notebooks/Data/SWORD
+  # SWORD `type` codes the tracer may walk through (1 = river).
+  river_types: [1]
+
+gee:
+  project: null
+
+# Step 02: reach creation. reach_len_m = length_modulator * len_slope * facc + len_intercept
+reaches:
+  length_modulator: 1.0
+  buffer_width: 0.5        # placeholder for testing; set from your v1 runs
+  len_slope: 0.0668            # v1 regression (Ganges, HydroRIVERS UPLAND_SKM)
+  len_intercept: 14316.0
+  ds_trim_fraction: 0.8       # drop a last reach shorter than this × the one above it
+  gap_tolerance_m: 10.0       # warn on gaps between SWORD reaches larger than this
+  smoothing_window_multiplier: 1.5  # valley-direction window = this × reach length
+  n_tangent_samples: 21
+  cut_extent_factor: 3.0      # cut-line half-length = this × largest buffer
+
+# Step 03: water masks (not yet ported to the package; validated now so the
+# rivers table can already carry these columns).
+masks:
+  year_start: null
+  year_end: null
+  reach_start: null         # null = first reach
+  reach_end: null           # null = last reach
+  dswe_level: null          # DSWE class threshold, 1-4
+  percentile: 50.0
+  min_pixels: 200
+  tile_size_km2: 400.0

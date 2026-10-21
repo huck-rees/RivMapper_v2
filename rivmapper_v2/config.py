@@ -1,0 +1,506 @@
+"""Project configuration for RivMapper v2.
+
+A RivMapper project is defined by two files:
+
+``rivmapper.yaml``
+    Settings shared by every river: where data lives, the SWORD version,
+    the GEE project, and default parameters for each pipeline step.
+
+``rivers.csv``
+    One row per river. Required columns identify the river and its SWORD
+    endpoints. Any parameter from the ``reaches`` or ``masks`` sections
+    can also appear as a column; a filled cell overrides the YAML default
+    for that river, and a blank cell falls back to it.
+
+``Project.load()`` reads both, validates every value up front, and
+returns one fully resolved ``River`` per row, so pipeline steps never
+look anything up in the raw files.
+
+Example:
+    >>> project = Project.load("E:/Dissertation/Data/rivmapper.yaml")
+    >>> beni = project.river("Beni")
+    >>> beni.reaches.buffer_width
+    0.5
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import re
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import yaml
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
+
+from .paths import RiverPaths
+
+log = logging.getLogger(__name__)
+
+CONTINENTS = ("af", "as", "eu", "na", "oc", "sa")
+
+# Characters that are illegal in Windows file names; river_name becomes
+# part of every output path.
+_BAD_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+class ConfigError(ValueError):
+    """Raised when the YAML config or rivers table is invalid.
+
+    Collects every problem found, so the user can fix them in one pass.
+    """
+
+    def __init__(self, problems: list[str], source: Path | None = None):
+        self.problems = problems
+        where = f" in {source}" if source else ""
+        lines = "\n".join(f"  - {p}" for p in problems)
+        super().__init__(f"{len(problems)} problem(s){where}:\n{lines}")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Settings sections
+# ─────────────────────────────────────────────────────────────────────
+class _Section(BaseModel):
+    """Base for YAML sections: unknown keys are errors, not silently ignored."""
+
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+
+class SwordSettings(_Section):
+    """Where SWORD lives and which reaches the tracer may walk through."""
+
+    version: str = "v17b"
+    dir: Path | None = Field(
+        None,
+        description="Folder holding the continental SWORD geopackages. "
+        "Defaults to {data_root}/SWORD.",
+    )
+    download_url: str = "https://zenodo.org/records/15299138/files/SWORD_v17b_gpkg.zip"
+    md5: str | None = Field(
+        "fdaaad6f6b0b58f4212b99d2ad98188c",
+        description="Expected MD5 of the Zenodo zip; null skips the check.",
+    )
+    river_types: list[int] = Field(
+        default_factory=lambda: [1],
+        description="SWORD `type` codes kept for tracing (1 = river).",
+    )
+
+
+class GeeSettings(_Section):
+    """Google Earth Engine settings."""
+
+    project: str | None = None
+
+
+class ReachSettings(_Section):
+    """Parameters for step 02 (create reaches). All can be set per river."""
+
+    length_modulator: float = Field(1.0, gt=0)
+    buffer_width: float | None = Field(
+        None, gt=0, description="Buffer half-width as a fraction of reach length."
+    )
+    len_slope: float = Field(0.0668, gt=0)
+    len_intercept: float = 14316.0
+    ds_trim_fraction: float = Field(0.8, ge=0, le=1)
+    gap_tolerance_m: float = Field(10.0, ge=0)
+    smoothing_window_multiplier: float = Field(1.5, gt=0)
+    n_tangent_samples: int = Field(21, ge=3)
+    cut_extent_factor: float = Field(3.0, gt=0)
+
+
+class MaskSettings(_Section):
+    """Parameters for step 03 (water masks). All can be set per river."""
+
+    year_start: int | None = Field(None, ge=1982)
+    year_end: int | None = Field(None, ge=1982)
+    reach_start: int | None = Field(None, ge=1)
+    reach_end: int | None = Field(None, ge=1)
+    dswe_level: int | None = Field(None, ge=1, le=4)
+    percentile: float = Field(50.0, ge=0, le=100)
+    min_pixels: int = Field(200, ge=0)
+    tile_size_km2: float = Field(400.0, gt=0)
+
+    @model_validator(mode="after")
+    def _ranges_ordered(self) -> MaskSettings:
+        if self.year_start and self.year_end and self.year_start > self.year_end:
+            raise ValueError(
+                f"year_start ({self.year_start}) is after year_end ({self.year_end})"
+            )
+        if self.reach_start and self.reach_end and self.reach_start > self.reach_end:
+            raise ValueError(
+                f"reach_start ({self.reach_start}) is after reach_end "
+                f"({self.reach_end})"
+            )
+        return self
+
+
+# Sections whose fields may be overridden per river in the rivers table.
+OVERRIDABLE_SECTIONS: dict[str, type[_Section]] = {
+    "reaches": ReachSettings,
+    "masks": MaskSettings,
+}
+OVERRIDE_COLUMNS: dict[str, str] = {
+    field: section
+    for section, model in OVERRIDABLE_SECTIONS.items()
+    for field in model.model_fields
+}
+
+# Old master-CSV column names → new names. Accepted with a warning.
+LEGACY_COLUMN_ALIASES: dict[str, str] = {
+    "working_directory": "data_root",
+    "reach_length_modulator": "length_modulator",
+    "DSWE_threshold_level": "dswe_level",
+    "mask_percentile": "percentile",
+    "continent_abbrev": "sword_cont_abb",
+    "us_reach_id": "us_sword_reach_id",
+    "ds_reach_id": "ds_sword_reach_id",
+}
+
+RIVER_ID_COLUMNS = (
+    "river_name",
+    "sword_cont_abb",
+    "us_sword_reach_id",
+    "ds_sword_reach_id",
+)
+# Columns users may keep for their own bookkeeping; ignored by the pipeline.
+NOTE_COLUMNS = ("notes",)
+
+
+class ProjectSettings(_Section):
+    """Top level of ``rivmapper.yaml``."""
+
+    data_root: Path
+    rivers_table: Path = Path("rivers.csv")
+    overwrite: bool = False
+    sword: SwordSettings = Field(default_factory=SwordSettings)
+    gee: GeeSettings = Field(default_factory=GeeSettings)
+    reaches: ReachSettings = Field(default_factory=ReachSettings)
+    masks: MaskSettings = Field(default_factory=MaskSettings)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Resolved, per-river view
+# ─────────────────────────────────────────────────────────────────────
+class River(BaseModel):
+    """One river with every setting resolved (YAML defaults + row overrides)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    continent: str
+    us_reach_id: int
+    ds_reach_id: int
+    data_root: Path
+    sword: SwordSettings
+    gee: GeeSettings
+    reaches: ReachSettings
+    masks: MaskSettings
+    overwrite: bool = False
+    row_number: int | None = Field(
+        None, description="Spreadsheet row in rivers.csv (header = row 1)."
+    )
+
+    @property
+    def paths(self) -> RiverPaths:
+        """Standard input/output locations for this river."""
+        return RiverPaths(self.data_root, self.name)
+
+    @property
+    def sword_dir(self) -> Path:
+        """Folder holding the continental SWORD geopackages."""
+        return self.sword.dir if self.sword.dir else self.data_root / "SWORD"
+
+    def require(self, section: str, *fields: str) -> None:
+        """Raise ConfigError if any of ``fields`` in ``section`` is unset.
+
+        Steps call this so a missing parameter fails with a clear message
+        naming the river and the YAML key / CSV column to fill.
+        """
+        settings = getattr(self, section)
+        missing = [f for f in fields if getattr(settings, f) is None]
+        if missing:
+            raise ConfigError(
+                [
+                    f"{self.name}: '{f}' is not set — add `{section}: {f}:` "
+                    f"to rivmapper.yaml or a `{f}` column to the rivers table"
+                    for f in missing
+                ]
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Project loading
+# ─────────────────────────────────────────────────────────────────────
+class Project:
+    """A loaded, validated RivMapper project.
+
+    Attributes:
+        config_path: The YAML file this project was loaded from.
+        settings: Parsed YAML (project-wide defaults).
+        rivers: One resolved ``River`` per row of the rivers table.
+    """
+
+    def __init__(
+        self, config_path: Path, settings: ProjectSettings, rivers: list[River]
+    ):
+        self.config_path = config_path
+        self.settings = settings
+        self.rivers = rivers
+
+    # ── construction ────────────────────────────────────────────────
+    @classmethod
+    def load(cls, config_path: str | Path) -> Project:
+        """Load and validate ``rivmapper.yaml`` and its rivers table.
+
+        Relative paths in the YAML (``data_root``, ``rivers_table``,
+        ``sword.dir``) are resolved against the YAML file's folder.
+
+        Raises:
+            FileNotFoundError: If the YAML or rivers table does not exist.
+            ConfigError: Listing every validation problem found.
+        """
+        config_path = Path(config_path).expanduser().resolve()
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+        settings = load_settings(config_path)
+
+        table_path = settings.rivers_table
+        if not table_path.exists():
+            raise FileNotFoundError(
+                f"Rivers table not found: {table_path} "
+                f"(set `rivers_table:` in {config_path.name})"
+            )
+        table = read_rivers_table(table_path)
+        rivers = resolve_rivers(settings, table, source=table_path)
+        return cls(config_path, settings, rivers)
+
+    # ── access ──────────────────────────────────────────────────────
+    @property
+    def river_names(self) -> list[str]:
+        return [r.name for r in self.rivers]
+
+    def river(self, name: str) -> River:
+        """Return one river by name (case-sensitive)."""
+        for r in self.rivers:
+            if r.name == name:
+                return r
+        raise KeyError(f"No river named {name!r}. Available: {self.river_names}")
+
+    def select(self, names: Iterable[str] | None) -> list[River]:
+        """Return rivers in table order, optionally restricted to ``names``."""
+        if not names:
+            return list(self.rivers)
+        names = list(names)
+        unknown = [n for n in names if n not in self.river_names]
+        if unknown:
+            raise KeyError(
+                f"Unknown river(s): {unknown}. Available: {self.river_names}"
+            )
+        wanted = set(names)
+        return [r for r in self.rivers if r.name in wanted]
+
+    def __repr__(self) -> str:
+        return (
+            f"Project({self.config_path.name}, {len(self.rivers)} rivers, "
+            f"data_root={self.settings.data_root})"
+        )
+
+
+def load_settings(config_path: Path) -> ProjectSettings:
+    """Parse and validate the YAML file, resolving relative paths."""
+    with open(config_path, encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    if not isinstance(raw, dict):
+        raise ConfigError(["top level must be a mapping of settings"], config_path)
+    try:
+        settings = ProjectSettings.model_validate(raw)
+    except ValidationError as e:
+        raise ConfigError(_format_pydantic(e), config_path) from None
+
+    base = config_path.parent
+    settings.data_root = _resolve(settings.data_root, base)
+    settings.rivers_table = _resolve(settings.rivers_table, base)
+    if settings.sword.dir is not None:
+        settings.sword.dir = _resolve(settings.sword.dir, base)
+    return settings
+
+
+def read_rivers_table(path: Path) -> pd.DataFrame:
+    """Read the rivers CSV as strings, blank rows dropped, legacy names mapped."""
+    table = pd.read_csv(path, dtype=str, skip_blank_lines=True)
+    table.columns = [c.strip() for c in table.columns]
+    table = table.dropna(how="all").reset_index(drop=True)
+
+    renames = {}
+    for old, new in LEGACY_COLUMN_ALIASES.items():
+        if old in table.columns:
+            if new in table.columns:
+                raise ConfigError(
+                    [f"both '{old}' (old name) and '{new}' columns present"], path
+                )
+            renames[old] = new
+    if renames:
+        log.warning(
+            "Rivers table uses old column names; please rename: %s",
+            ", ".join(f"{o} → {n}" for o, n in renames.items()),
+        )
+        table = table.rename(columns=renames)
+    return table
+
+
+def resolve_rivers(
+    settings: ProjectSettings, table: pd.DataFrame, source: Path | None = None
+) -> list[River]:
+    """Merge YAML defaults with each table row and validate the result."""
+    problems: list[str] = []
+
+    missing = [c for c in RIVER_ID_COLUMNS if c not in table.columns]
+    if missing:
+        raise ConfigError([f"rivers table is missing column(s): {missing}"], source)
+
+    known = set(RIVER_ID_COLUMNS) | set(OVERRIDE_COLUMNS) | {"data_root"}
+    unknown = [
+        c
+        for c in table.columns
+        if c not in known and c not in NOTE_COLUMNS and not c.startswith("_")
+    ]
+    if unknown:
+        problems.append(
+            f"unknown column(s) {unknown}. Per-river overrides must be one of "
+            f"{sorted(OVERRIDE_COLUMNS)}; prefix a column with '_' or name it "
+            f"'notes' to keep it for your own reference"
+        )
+
+    names = table["river_name"].str.strip()
+    dupes = sorted(set(names[names.duplicated()].dropna()))
+    if dupes:
+        problems.append(f"duplicate river_name(s): {dupes}")
+
+    rivers: list[River] = []
+    for idx, row in table.iterrows():
+        row_no = int(idx) + 2  # spreadsheet row; header is row 1
+        cells = {k: _clean_cell(v) for k, v in row.items() if k in known}
+        label = f"row {row_no} ({cells.get('river_name') or 'no name'})"
+        try:
+            rivers.append(_resolve_row(settings, cells, row_no))
+        except ValidationError as e:
+            problems.extend(f"{label}: {m}" for m in _format_pydantic(e))
+        except ValueError as e:
+            problems.append(f"{label}: {e}")
+
+    if problems:
+        raise ConfigError(problems, source)
+    return rivers
+
+
+def _resolve_row(
+    settings: ProjectSettings, cells: dict[str, Any], row_no: int
+) -> River:
+    name = cells.get("river_name")
+    if not name:
+        raise ValueError("river_name is blank")
+    if _BAD_NAME_CHARS.search(name):
+        raise ValueError(
+            f"river_name {name!r} contains characters not allowed in file names"
+        )
+    continent = (cells.get("sword_cont_abb") or "").lower()
+    if continent not in CONTINENTS:
+        raise ValueError(
+            f"sword_cont_abb {cells.get('sword_cont_abb')!r} must be one of "
+            f"{list(CONTINENTS)}"
+        )
+    us_id = _parse_reach_id(cells.get("us_sword_reach_id"), "us_sword_reach_id")
+    ds_id = _parse_reach_id(cells.get("ds_sword_reach_id"), "ds_sword_reach_id")
+    if us_id == ds_id:
+        raise ValueError("us_sword_reach_id and ds_sword_reach_id are identical")
+
+    data_root = settings.data_root
+    if cells.get("data_root"):
+        data_root = _resolve(Path(cells["data_root"]), settings.data_root)
+
+    sections: dict[str, _Section] = {}
+    for section, model in OVERRIDABLE_SECTIONS.items():
+        base = getattr(settings, section).model_dump()
+        overrides = {
+            f: cells[f] for f in model.model_fields if cells.get(f) is not None
+        }
+        sections[section] = model.model_validate({**base, **overrides})
+
+    return River(
+        name=name,
+        continent=continent,
+        us_reach_id=us_id,
+        ds_reach_id=ds_id,
+        data_root=data_root,
+        sword=settings.sword,
+        gee=settings.gee,
+        overwrite=settings.overwrite,
+        row_number=row_no,
+        **sections,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────
+_INT_LIKE_FLOAT = re.compile(r"^-?\d+\.0*$")
+
+
+def _clean_cell(value: Any) -> Any:
+    """Blank/NaN → None; strip text; '2005.0' → '2005' (Excel artefact)."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    text = str(value).strip()
+    if text == "" or text.lower() in {"nan", "none", "null"}:
+        return None
+    if _INT_LIKE_FLOAT.match(text):
+        text = text.split(".")[0]
+    return text
+
+
+def _parse_reach_id(value: Any, column: str) -> int:
+    if value is None:
+        raise ValueError(f"{column} is blank")
+    text = str(value)
+    if "e" in text.lower():
+        raise ValueError(
+            f"{column} {text!r} looks like scientific notation — Excel has "
+            f"probably rounded the ID. Format the column as Number with 0 "
+            f"decimals (or Text) and re-enter it"
+        )
+    if not text.isdigit() or len(text) != 11:
+        raise ValueError(f"{column} {text!r} is not an 11-digit SWORD reach ID")
+    return int(text)
+
+
+def _resolve(path: Path, base: Path) -> Path:
+    path = Path(str(path)).expanduser()
+    return path if path.is_absolute() else (base / path).resolve()
+
+
+def _format_pydantic(err: ValidationError) -> list[str]:
+    out = []
+    for e in err.errors():
+        loc = ".".join(str(p) for p in e["loc"]) or "value"
+        msg = e["msg"].removeprefix("Value error, ")
+        if e["type"] == "extra_forbidden":
+            msg = "unknown setting (check spelling)"
+        out.append(
+            f"{loc}: {msg}"
+            + (
+                f" (got {e['input']!r})"
+                if e["type"] not in ("extra_forbidden", "missing")
+                and not isinstance(e.get("input"), dict)
+                else ""
+            )
+        )
+    return out

@@ -52,6 +52,7 @@ Thumbs.db
 
 # Large data
 *.csv
+!examples/**/*.csv
 *.parquet
 *.zip
 *.tar.gz
@@ -69,3 +70,6 @@ htmlcov/
 
 # ruff
 .ruff_cache/
+
+# Example project outputs
+examples/*/output/

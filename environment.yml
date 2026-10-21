@@ -16,7 +16,12 @@ dependencies:
   - earthengine-api
   - ipyleaflet
   - pyogrio
+  - shapely>=2.0
+  - pydantic>=2.5
+  - pyyaml
+  - requests
   - tqdm
+  - pytest
   - pip
   - pip:
       - -e ".[dev]"
