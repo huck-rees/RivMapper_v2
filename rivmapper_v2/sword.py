@@ -54,10 +54,31 @@ def ensure_sword(
 # ─────────────────────────────────────────────────────────────────────
 # Tracing
 # ─────────────────────────────────────────────────────────────────────
+SWORD_TYPES = {
+    1: "river",
+    3: "lake on river",
+    4: "dam or waterfall",
+    5: "unreliable topology",
+    6: "ghost reach",
+}
+
+
+def _describe(rid: int, row) -> str:
+    t = int(row["type"])
+    name = SWORD_TYPES.get(t, "unknown")
+    extra = []
+    if "reach_len" in row:
+        extra.append(f"{row['reach_len'] / 1000:.1f} km long")
+    if "dist_out" in row:
+        extra.append(f"{row['dist_out'] / 1000:.0f} km from outlet")
+    return f"{rid} (type {t} = {name}" + (f", {', '.join(extra)})" if extra else ")")
+
+
 def trace_reaches(
     us_reach_id: int,
     ds_reach_id: int,
     reaches: gpd.GeoDataFrame,
+    allowed_types: list[int] | None = None,
     max_iter: int = 10_000,
 ) -> list[int]:
     """Walk SWORD topology from ``us_reach_id`` down to ``ds_reach_id``.
@@ -66,10 +87,18 @@ def trace_reaches(
     (a single-channel walk). ``rch_id_dn`` is a space-separated string
     when a reach has several downstream neighbours.
 
+    The walk uses the full network, then checks the path against
+    ``allowed_types``, so a disallowed reach (e.g. a short lake-flagged
+    reach on the main channel) is reported by ID and type rather than
+    looking like a break in the network.
+
     Args:
         us_reach_id: Upstream end of the river (inclusive).
         ds_reach_id: Downstream end of the river (inclusive).
-        reaches: SWORD reaches with ``reach_id``, ``rch_id_dn``, ``dist_out``.
+        reaches: SWORD reaches with ``reach_id``, ``rch_id_dn``, ``dist_out``
+            (and ``type`` if ``allowed_types`` is given). Pass the whole
+            continent, not a type-filtered subset.
+        allowed_types: SWORD ``type`` codes the path may contain; None = any.
         max_iter: Safety limit on the number of steps.
 
     Returns:
@@ -77,7 +106,8 @@ def trace_reaches(
 
     Raises:
         RuntimeError: If an endpoint is missing, the endpoints are swapped,
-            or the walk leaves the network / never reaches ``ds_reach_id``.
+            the walk leaves the network or never reaches ``ds_reach_id``,
+            or the path includes a reach type not in ``allowed_types``.
     """
     by_id = reaches.set_index("reach_id")
     dn_lookup = by_id["rch_id_dn"].to_dict()
@@ -89,8 +119,8 @@ def trace_reaches(
     ):
         if rid not in dist_lookup:
             raise RuntimeError(
-                f"{label} {rid} is not a river reach in this SWORD continent. "
-                f"Check sword_cont_abb, and that it is not a lake/dam reach."
+                f"{label} {rid} is not in this SWORD continent. Check the ID "
+                f"(SWORD reach IDs have 11 digits) and sword_cont_abb."
             )
     us_dist, ds_dist = dist_lookup[us_reach_id], dist_lookup[ds_reach_id]
     if us_dist <= ds_dist:
@@ -104,28 +134,44 @@ def trace_reaches(
     current = us_reach_id
     for _ in range(max_iter):
         if current == ds_reach_id:
-            return path
-        dn_raw = dn_lookup.get(current)
-        if dn_raw is None:
-            raise RuntimeError(
-                f"Walk left the river network at reach {current} (after "
-                f"{len(path) - 1} steps): its downstream neighbour is not a "
-                f"kept reach type. Possible lake/dam reach or topology break."
-            )
-        dn_ids = [int(x) for x in str(dn_raw).split() if int(x) != 0]
+            break
+        dn_ids = [int(x) for x in str(dn_lookup[current]).split() if int(x) != 0]
         if not dn_ids:
             raise RuntimeError(
-                f"Reach {current} has no downstream neighbour "
-                f"(rch_id_dn={dn_raw!r}); the walk reached an outlet without "
-                f"passing {ds_reach_id}. Check the endpoint pair."
+                f"Reach {current} has no downstream neighbour; the walk reached "
+                f"an outlet without passing {ds_reach_id}. Check the endpoint "
+                f"pair (the downstream reach may be on a different branch)."
             )
-        current = dn_ids[0]
+        nxt = dn_ids[0]
+        if nxt not in dn_lookup:
+            raise RuntimeError(
+                f"Reach {current} drains to {nxt}, which is not in this SWORD "
+                f"continent file (topology break, or the river crosses into "
+                f"another continent's file)."
+            )
+        current = nxt
         path.append(current)
+    else:
+        raise RuntimeError(
+            f"Did not reach {ds_reach_id} within {max_iter} steps. "
+            f"Possible topology loop or wrong endpoint pair."
+        )
 
-    raise RuntimeError(
-        f"Did not reach {ds_reach_id} within {max_iter} steps. "
-        f"Possible topology loop or wrong endpoint pair."
-    )
+    if allowed_types is not None and "type" in by_id.columns:
+        allowed = {int(t) for t in allowed_types}
+        bad = [rid for rid in path if int(by_id.at[rid, "type"]) not in allowed]
+        if bad:
+            listed = "; ".join(_describe(rid, by_id.loc[rid]) for rid in bad[:10])
+            more = f" (+{len(bad) - 10} more)" if len(bad) > 10 else ""
+            needed = sorted(allowed | {int(by_id.at[rid, "type"]) for rid in bad})
+            raise RuntimeError(
+                f"The path ({len(path)} reaches) passes through {len(bad)} reach(es) "
+                f"whose SWORD type is not in river_types {sorted(allowed)}: "
+                f"{listed}{more}. If these are part of the river channel, add "
+                f"their type to `sword: river_types:` in rivmapper.yaml "
+                f"(e.g. river_types: {needed})."
+            )
+    return path
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -141,12 +187,9 @@ def _parameters(river: River) -> dict:
     }
 
 
-def load_continent_reaches(
-    reaches_path: Path, river_types: list[int]
-) -> gpd.GeoDataFrame:
-    """Read a continental SWORD reaches gpkg, keeping only ``river_types``."""
-    types = ",".join(str(int(t)) for t in river_types)
-    return pyogrio.read_dataframe(reaches_path, where=f"type IN ({types})")
+def load_continent_reaches(reaches_path: Path) -> gpd.GeoDataFrame:
+    """Read a continental SWORD reaches gpkg (all reach types)."""
+    return pyogrio.read_dataframe(reaches_path)
 
 
 def extract_river(
@@ -180,7 +223,12 @@ def extract_river(
             return existing
 
     try:
-        path = trace_reaches(river.us_reach_id, river.ds_reach_id, reaches)
+        path = trace_reaches(
+            river.us_reach_id,
+            river.ds_reach_id,
+            reaches,
+            allowed_types=list(river.sword.river_types),
+        )
     except RuntimeError as e:
         return StepResult(river.name, STEP, FAILED, str(e))
 
@@ -263,7 +311,7 @@ def run(project: Project, rivers: list[River]) -> list[StepResult]:
         try:
             reaches_path, nodes_path = ensure_sword(sword_dir, continent, settings)
             log.info("Loading %s", reaches_path.name)
-            reaches = load_continent_reaches(reaches_path, settings.river_types)
+            reaches = load_continent_reaches(reaches_path)
         except Exception as e:  # noqa: BLE001 — report per river, keep going
             results.extend(
                 StepResult(r.name, STEP, FAILED, f"could not load SWORD: {e}")

@@ -10,8 +10,7 @@ from .conftest import CHAIN, SIDE
 @pytest.fixture
 def reaches(synthetic_project):
     d = synthetic_project.parent / "SWORD"
-    g = gpd.read_file(d / "sa_sword_reaches_v17b.gpkg")
-    return g[g["type"] == 1]
+    return gpd.read_file(d / "sa_sword_reaches_v17b.gpkg")
 
 
 def test_trace_full_chain(reaches):
@@ -28,8 +27,24 @@ def test_swapped_endpoints(reaches):
 
 
 def test_missing_endpoint(reaches):
-    with pytest.raises(RuntimeError, match="not a river reach"):
-        trace_reaches(62200000993, CHAIN[-1], reaches)  # lake reach, filtered out
+    with pytest.raises(RuntimeError, match="11 digits"):
+        trace_reaches(622000009930, CHAIN[-1], reaches)
+
+
+def test_lake_endpoint_reported_by_type(reaches):
+    with pytest.raises(RuntimeError, match=r"type 3 = lake on river.*\[1, 3\]"):
+        trace_reaches(62200000993, CHAIN[-1], reaches, allowed_types=[1])
+    assert trace_reaches(62200000993, CHAIN[-1], reaches, allowed_types=[1, 3])[0] == (
+        62200000993
+    )
+
+
+def test_lake_reach_mid_path_reported(reaches):
+    lake_mid = reaches.copy()
+    lake_mid.loc[lake_mid["reach_id"] == CHAIN[3], "type"] = 3
+    with pytest.raises(RuntimeError, match=str(CHAIN[3])):
+        trace_reaches(CHAIN[0], CHAIN[-1], lake_mid, allowed_types=[1])
+    assert trace_reaches(CHAIN[0], CHAIN[-1], lake_mid, allowed_types=[1, 3]) == CHAIN
 
 
 def test_ds_not_on_path(reaches):
