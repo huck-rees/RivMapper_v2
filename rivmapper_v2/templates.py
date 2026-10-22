@@ -37,8 +37,8 @@ def render_config(
 # Check it:  rivmapper validate rivmapper.yaml
 # Run it:    rivmapper run rivmapper.yaml [--steps sword,reaches] [--rivers Beni]
 
-# This project's outputs go under this folder (extracted SWORD reaches,
-# RiverMapping/, run records, ...).
+# This project's outputs go under this folder: one subfolder per river,
+# with one subfolder per step ({{river}}/sword/, {{river}}/reaches/, ...).
 data_root: {_v(data_root)}
 
 # One row per river: river_name, sword_cont_abb, us_sword_reach_id,

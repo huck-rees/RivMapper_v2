@@ -85,7 +85,7 @@ Starting at the upstream end, each reach's valley length is set to `widths_per_r
 
 ### Outputs
 
-`{data_root}/RiverMapping/Reaches/{river}/`:
+`{data_root}/{river}/reaches/`:
 
 | File | Contents |
 |---|---|

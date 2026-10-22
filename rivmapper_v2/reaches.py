@@ -22,7 +22,7 @@ separated by ``boundary_method``:
 
 The river head and mouth are squared off with perpendicular cuts.
 
-Outputs (``{data_root}/RiverMapping/Reaches/{river}/``):
+Outputs (``{data_root}/{river}/reaches/``):
     ``{river}_reach_lines.gpkg``, ``{river}_reach_polygons.gpkg`` (fields
     ``ds_order``, ``reach_len``, ``ds_dist``, ``reach_ar``, ``us_drain_ar``,
     ``valley_len``, ``valley_dist``, ``sinuosity``, ``width_ref``) and

@@ -2,7 +2,7 @@
 
 For every river, walks SWORD's ``rch_id_dn`` topology from the upstream
 reach ID to the downstream reach ID and writes the traced reaches and
-their nodes to ``{data_root}/SWORD/Extracted_Rivers/{river}/``.
+their nodes to ``{data_root}/{river}/sword/``.
 
 Rivers are grouped by (SWORD folder, continent) so each continental
 reaches geopackage is read once per run. Nodes are read with an SQL

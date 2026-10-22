@@ -32,6 +32,9 @@ RivMapper_v2/
         ├── rivmapper.yaml
         ├── rivers.csv
         └── output/        everything this project produces
+            └── OkTedi/    one folder per river
+                ├── sword/     traced SWORD reaches and nodes
+                └── reaches/   reach lines, polygons, valley line
 ```
 
 ## External datasets
@@ -115,8 +118,8 @@ If the old working directory already holds a `SWORD/` folder, the new config kee
 
 | Step | Module | Output (under `data_root`) |
 |---|---|---|
-| `sword` | `rivmapper_v2/sword.py` | `SWORD/Extracted_Rivers/{river}/`: traced SWORD reaches and nodes |
-| `reaches` | `rivmapper_v2/reaches.py`, `valley.py` | `RiverMapping/Reaches/{river}/`: reach lines, polygons and valley line. Reaches are 80 channel widths of valley length, and polygons never overlap. Method and citations: [docs/methods/reaches.md](docs/methods/reaches.md) |
+| `sword` | `rivmapper_v2/sword.py` | `{river}/sword/`: traced SWORD reaches and nodes |
+| `reaches` | `rivmapper_v2/reaches.py`, `valley.py` | `{river}/reaches/`: reach lines, polygons and valley line. Reaches are 80 channel widths of valley length, and polygons never overlap. Method and citations: [docs/methods/reaches.md](docs/methods/reaches.md) |
 | masks | `notebooks/03_create_masks.ipynb` | Not yet ported; still reads the old master CSV |
 
 ## Repository structure

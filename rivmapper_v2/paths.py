@@ -1,22 +1,24 @@
 """Standard file layout under a project's ``data_root``.
 
 Every step reads and writes through ``RiverPaths`` so the folder
-convention is defined in exactly one place. The layout matches the
-v2 notebooks, so existing outputs are picked up as-is::
+convention is defined in exactly one place. One folder per river, one
+subfolder per step::
 
     {data_root}/
-    ├── SWORD/                                   continental SWORD gpkgs
-    │   └── Extracted_Rivers/{river}/            step: sword
-    │       ├── {river}_SWORD_reaches.gpkg
-    │       ├── {river}_SWORD_reaches.csv
-    │       ├── {river}_SWORD_nodes.gpkg
-    │       └── {river}_sword_run.yaml           provenance record
-    └── RiverMapping/
-        └── Reaches/{river}/                     step: reaches
+    └── {river}/
+        ├── sword/                               step: sword
+        │   ├── {river}_sword_reaches.gpkg
+        │   ├── {river}_sword_reaches.csv
+        │   ├── {river}_sword_nodes.gpkg
+        │   └── {river}_sword_run.yaml           provenance record
+        └── reaches/                             step: reaches
             ├── {river}_reach_lines.gpkg
             ├── {river}_reach_polygons.gpkg
             ├── {river}_valley_line.gpkg
             └── {river}_reaches_run.yaml
+
+Shared external datasets (the continental SWORD files) live outside
+``data_root``; see ``rivmapper_v2.data``.
 """
 
 from __future__ import annotations
@@ -48,25 +50,30 @@ class RiverPaths:
 
     # ── step: sword ─────────────────────────────────────────────────
     @property
+    def river_dir(self) -> Path:
+        """All outputs for this river."""
+        return self.data_root / self.river
+
+    @property
     def sword_dir(self) -> Path:
-        return self.data_root / "SWORD" / "Extracted_Rivers" / self.river
+        return self.river_dir / "sword"
 
     @property
     def sword_reaches(self) -> Path:
-        return self.sword_dir / f"{self.river}_SWORD_reaches.gpkg"
+        return self.sword_dir / f"{self.river}_sword_reaches.gpkg"
 
     @property
     def sword_reaches_csv(self) -> Path:
-        return self.sword_dir / f"{self.river}_SWORD_reaches.csv"
+        return self.sword_dir / f"{self.river}_sword_reaches.csv"
 
     @property
     def sword_nodes(self) -> Path:
-        return self.sword_dir / f"{self.river}_SWORD_nodes.gpkg"
+        return self.sword_dir / f"{self.river}_sword_nodes.gpkg"
 
     # ── step: reaches ───────────────────────────────────────────────
     @property
     def reaches_dir(self) -> Path:
-        return self.data_root / "RiverMapping" / "Reaches" / self.river
+        return self.river_dir / "reaches"
 
     @property
     def reach_lines(self) -> Path:
