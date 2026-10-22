@@ -37,6 +37,17 @@ RivMapper_v2/
                 └── reaches/   reach lines, polygons, valley line
 ```
 
+## Google Earth Engine
+
+The `extract_masks` step uses Earth Engine. One-time setup:
+
+1. You need a Google Cloud project registered for Earth Engine (code.earthengine.google.com/register).
+2. Set it in each project's `rivmapper.yaml`: `gee: project: your-project-id`.
+3. Sign in once per machine: `rivmapper gee auth`. This opens a browser and stores credentials in your user profile.
+4. Test: `rivmapper gee check projects/oktedi/rivmapper.yaml`. It reports the connection and how many Landsat scenes cover each river.
+
+Headless servers can use a service account instead: set `gee: service_account:` and `gee: key_file:`.
+
 ## External datasets
 
 External datasets are listed once in [`rivmapper_v2/datasets.yaml`](rivmapper_v2/datasets.yaml), with each one's URL, version, checksum, expected files, licence and citation.
@@ -118,6 +129,7 @@ If the old working directory already holds a `SWORD/` folder, the new config kee
 
 - [CRS and data conventions](docs/methods/conventions.md): projections, raster grid, mask values, units
 - [Reach definition](docs/methods/reaches.md): valley line, reach length, reach polygons
+- [Water masks](docs/methods/masks.md): Landsat, DSWE, compositing, download
 
 ## Pipeline steps
 
@@ -125,7 +137,8 @@ If the old working directory already holds a `SWORD/` folder, the new config kee
 |---|---|---|
 | `sword` | `rivmapper_v2/sword.py` | `{river}/sword/`: traced SWORD reaches and nodes |
 | `reaches` | `rivmapper_v2/reaches.py`, `valley.py` | `{river}/reaches/`: reach lines, polygons and valley line. Reaches are 100 channel widths of valley length, split by nearest position along the valley, so polygons never overlap. Method and citations: [docs/methods/reaches.md](docs/methods/reaches.md) |
-| masks | `notebooks/03_create_masks.ipynb` | Not yet ported; still reads the old master CSV |
+| `extract_masks` | `rivmapper_v2/masks.py`, `gee.py` | `{river}/masks/raw/`: annual DSWE water masks from Earth Engine, on the river's 30 m grid |
+| mask processing | — | Planned: `{river}/masks/processed/` |
 
 ## Repository structure
 

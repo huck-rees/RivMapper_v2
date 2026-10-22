@@ -29,29 +29,54 @@ sword:
   # SWORD `type` codes the tracer may walk through (1 = river).
   river_types: [1]
 
+# Google Earth Engine (step extract_masks). Sign in once with `rivmapper gee auth`,
+# then test with `rivmapper gee check rivmapper.yaml`.
 gee:
-  project: null
+  project: null         # Google Cloud project registered for Earth Engine
+  service_account: null      # headless servers only: service-account email
+  key_file: null             # ...and its JSON key (relative to this file)
 
-# Step 02: reach creation. reach_len_m = length_modulator * len_slope * facc + len_intercept
+# Step 02: reach creation (see docs/methods/reaches.md).
 reaches:
+  # valley_widths: reaches have valley length = widths_per_reach x W(A), measured
+  #   along a smoothed valley line; W(A) is a width-vs-drainage-area power law
+  #   fitted to SWORD widths. drainage_regression: v1 rule on channel length.
+  length_method: valley_widths
+  widths_per_reach: 100.0       # k: 100 W = ~9 meander wavelengths, ~20 bends
+  buffer_width: 0.15        # buffer half-width as a fraction of reach (valley) length (required)
+  valley_sigma_widths: 15.0    # valley-line smoothing scale (channel widths)
+  valley_sinuosity_factor: 6.0 # smoothing in sinuous reaches = this x local sinuosity (widths)
+  final_merge_fraction: 0.5   # merge a last reach shorter than this x nominal
+  # drainage_regression only: reach_len_m = length_modulator * len_slope * facc + len_intercept
   length_modulator: 1.0
-  buffer_width: 0.5        # placeholder for testing; set from your v1 runs
   len_slope: 0.0668            # v1 regression (Ganges, HydroRIVERS UPLAND_SKM)
   len_intercept: 14316.0
-  ds_trim_fraction: 0.8       # drop a last reach shorter than this × the one above it
+  ds_trim_fraction: 0.8       # drop a last reach shorter than this x the one above it
+  # Projected CRS for every measured product: auto = UTM, or LAEA for rivers
+  # spanning > 3 deg from the UTM central meridian; or e.g. "EPSG:32754".
+  analysis_crs: auto
+  # Geometry details
   gap_tolerance_m: 10.0       # warn on gaps between SWORD reaches larger than this
-  smoothing_window_multiplier: 1.5  # valley-direction window = this × reach length
+  smoothing_window_multiplier: 1.5  # cut-line direction window = this x reach length
   n_tangent_samples: 21
-  cut_extent_factor: 3.0      # cut-line half-length = this × largest buffer
+  cut_extent_factor: 3.0      # cut-line half-length = this x largest buffer
+  # How neighbouring polygons are separated: nearest_valley (closest position
+  # along the valley line; boundaries perpendicular to the valley), nearest_centerline
+  # (closest reach channel centreline) or cut_lines (perpendicular cuts at each
+  # boundary; can overlap where the channel loops back).
+  boundary_method: nearest_valley
+  partition_spacing_m: 100.0   # sample spacing for nearest_valley / nearest_centerline
 
-# Step 03: water masks (not yet ported to the package; validated now so the
-# rivers table can already carry these columns).
+# Step 03: raw water masks from Earth Engine (see docs/methods/conventions.md).
 masks:
-  year_start: null
-  year_end: null
+  year_start: 1985         # required
+  year_end: 2024           # required
   reach_start: null         # null = first reach
   reach_end: null           # null = last reach
-  dswe_level: null          # DSWE class threshold, 1-4
-  percentile: 50.0
-  min_pixels: 200
-  tile_size_km2: 400.0
+  dswe_level: 2          # required: water = DSWE class 1..dswe_level (1-4)
+  percentile: 50.0          # per-pixel percentile of per-scene water (50 = median)
+  composite_windows: [0, 1, 2]   # years +/- tried in order until the checks pass
+  min_clear_fraction: 0.5  # share of reach polygon with >= 1 clear observation
+  min_water_fraction: 0.5  # detected / expected (width_ref x reach_len) water area
+  chunk_px: 2048           # download chunk size (pixels per side)
+  min_pixels: 200          # used later by mask processing

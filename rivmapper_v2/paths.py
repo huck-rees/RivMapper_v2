@@ -11,11 +11,15 @@ subfolder per step::
         │   ├── {river}_sword_reaches.csv
         │   ├── {river}_sword_nodes.gpkg
         │   └── {river}_sword_run.yaml           provenance record
-        └── reaches/                             step: reaches
-            ├── {river}_reach_lines.gpkg
-            ├── {river}_reach_polygons.gpkg
-            ├── {river}_valley_line.gpkg
-            └── {river}_reaches_run.yaml
+        ├── reaches/                             step: reaches
+        │   ├── {river}_reach_lines.gpkg
+        │   ├── {river}_reach_polygons.gpkg
+        │   ├── {river}_valley_line.gpkg
+        │   └── {river}_reaches_run.yaml
+        └── masks/                               step: extract_masks
+            ├── raw/{river}_r{NNN}_{year}.tif    water + n_obs, river grid
+            ├── {river}_extract_masks_log.csv    one row per reach-year
+            └── {river}_extract_masks_run.yaml
 
 Shared external datasets (the continental SWORD files) live outside
 ``data_root``; see ``rivmapper_v2.data``.
@@ -28,7 +32,7 @@ from pathlib import Path
 
 # Pipeline steps in run order (kept here, dependency-free, so the CLI can
 # list them without importing the heavy step modules).
-STEP_NAMES = ("sword", "reaches")
+STEP_NAMES = ("sword", "reaches", "extract_masks")
 
 
 def sword_continent_files(
@@ -87,8 +91,28 @@ class RiverPaths:
     def valley_line(self) -> Path:
         return self.reaches_dir / f"{self.river}_valley_line.gpkg"
 
+    # ── step: extract_masks ─────────────────────────────────────────
+    @property
+    def masks_dir(self) -> Path:
+        return self.river_dir / "masks"
+
+    @property
+    def raw_masks_dir(self) -> Path:
+        return self.masks_dir / "raw"
+
+    def raw_mask(self, ds_order: int, year: int) -> Path:
+        return self.raw_masks_dir / f"{self.river}_r{ds_order:03d}_{year}.tif"
+
+    @property
+    def masks_log(self) -> Path:
+        return self.masks_dir / f"{self.river}_extract_masks_log.csv"
+
     # ── provenance ──────────────────────────────────────────────────
     def run_record(self, step: str) -> Path:
         """Provenance YAML written next to a step's outputs."""
-        folder = {"sword": self.sword_dir, "reaches": self.reaches_dir}[step]
+        folder = {
+            "sword": self.sword_dir,
+            "reaches": self.reaches_dir,
+            "extract_masks": self.masks_dir,
+        }[step]
         return folder / f"{self.river}_{step}_run.yaml"

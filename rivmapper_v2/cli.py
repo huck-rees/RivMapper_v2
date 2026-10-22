@@ -176,6 +176,52 @@ def cmd_data(args: argparse.Namespace) -> int:
     raise ValueError(f"unknown action {args.action}")
 
 
+def cmd_gee(args: argparse.Namespace) -> int:
+    from . import gee
+
+    if args.action == "auth":
+        print("Opening a browser to sign in to Google Earth Engine...")
+        gee.authenticate(force=args.force)
+        print("Credentials saved.")
+        if not args.config:
+            print("Next: `rivmapper gee check <rivmapper.yaml>` to test them.")
+            return 0
+    if not args.config:
+        raise ValueError(
+            "give the project config, e.g. `rivmapper gee check rivmapper.yaml`"
+        )
+
+    from .config import Project
+
+    project = Project.load(args.config)
+    s = project.settings.gee
+    print(f"Project:   {s.project or '(not set: add gee: project: to rivmapper.yaml)'}")
+    login = f"service account {s.service_account}" if s.service_account else "user"
+    print(f"Login:     {login}")
+    gee.initialize(s)
+    n_test = gee.check_connection()["landsat8_scenes_2020_01_01"]
+    print(f"Connected: OK (test query returned {n_test} scenes)")
+
+    # Per-river imagery check over the first reach polygon.
+    import geopandas as gpd
+
+    for river in project.select(args.rivers.split(",") if args.rivers else None):
+        p = river.paths
+        if not p.reach_polygons.exists():
+            print(f"{river.name}: no reach polygons yet (run the reaches step)")
+            continue
+        poly = gpd.read_file(p.reach_polygons).to_crs(4326).geometry.iloc[0]
+        year = river.masks.year_start or 2020
+        geom = gee.ee_geometry(poly.simplify(0.0003))
+        n = (
+            gee.landsat_collection(geom, f"{year}-01-01", f"{year + 1}-01-01")
+            .size()
+            .getInfo()
+        )
+        print(f"{river.name}: {n} Landsat scenes over reach 1 in {year}")
+    return 0
+
+
 def cmd_migrate(args: argparse.Namespace) -> int:
     from .migrate import migrate_master_csv
 
@@ -232,6 +278,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dir", help="folder to use instead of the default datasets folder")
     p.add_argument("--force", action="store_true", help="re-download even if present")
     p.set_defaults(func=cmd_data)
+
+    p = sub.add_parser("gee", help="Earth Engine login and connection check")
+    p.add_argument("action", choices=["auth", "check"])
+    p.add_argument("config", nargs="?", help="path to rivmapper.yaml (for check)")
+    p.add_argument("--rivers", help="comma-separated river names to check")
+    p.add_argument("--force", action="store_true", help="auth: sign in again")
+    p.set_defaults(func=cmd_gee)
 
     p = sub.add_parser("migrate", help="convert an old master CSV to yaml + rivers.csv")
     p.add_argument("master_csv")

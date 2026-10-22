@@ -26,6 +26,7 @@ dependencies = [
     "requests",
     "tqdm",
     "pooch>=1.8",
+    "earthengine-api>=1.0",
 ]
 
 [project.scripts]

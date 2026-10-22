@@ -18,7 +18,7 @@ def test_beni_end_to_end(tmp_path, real_sword_dir):
     cfg.write_text(
         cfg.read_text().replace("dir: ./SWORD", f"dir: {real_sword_dir.as_posix()}")
     )
-    t = run_pipeline(Project.load(cfg))
+    t = run_pipeline(Project.load(cfg), steps=["sword", "reaches"])
     assert t["status"].tolist() == ["ok", "ok"]
     r = Project.load(cfg).river("Beni")
     assert len(gpd.read_file(r.paths.sword_reaches)) == 73

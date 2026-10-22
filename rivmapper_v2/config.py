@@ -93,11 +93,24 @@ class SwordSettings(_Section):
 class GeeSettings(_Section):
     """Google Earth Engine settings."""
 
-    project: str | None = None
+    project: str | None = Field(
+        None, description="Google Cloud project registered for Earth Engine."
+    )
+    service_account: str | None = Field(
+        None, description="Service-account email (headless servers); else user login."
+    )
+    key_file: Path | None = Field(None, description="JSON key for service_account.")
 
 
 class ReachSettings(_Section):
     """Parameters for step 02 (create reaches). All can be set per river."""
+
+    analysis_crs: str = Field(
+        "auto",
+        description="Projected CRS for all measured products: 'auto' (UTM, or "
+        "LAEA for rivers spanning > 3 deg from the UTM central meridian) or "
+        "any CRS string, e.g. 'EPSG:32754'.",
+    )
 
     length_method: Literal["valley_widths", "drainage_regression"] = Field(
         "valley_widths",
@@ -159,8 +172,31 @@ class MaskSettings(_Section):
     reach_end: int | None = Field(None, ge=1)
     dswe_level: int | None = Field(None, ge=1, le=4)
     percentile: float = Field(50.0, ge=0, le=100)
+    composite_windows: list[int] = Field(
+        default_factory=lambda: [0, 1, 2],
+        description="Half-widths (years) tried in order for each year's "
+        "composite: 0 = that year only, 1 = year +/- 1, ...",
+    )
+    min_clear_fraction: float = Field(
+        0.5,
+        ge=0,
+        le=1,
+        description="Widen the window if fewer than this share of the reach "
+        "polygon has at least one clear observation.",
+    )
+    min_water_fraction: float = Field(
+        0.5,
+        ge=0,
+        description="Widen the window if detected water area is below this "
+        "share of the expected wetted area (width_ref x channel length).",
+    )
+    chunk_px: int = Field(
+        2048,
+        ge=256,
+        le=8192,
+        description="Download chunk size (pixels per side) for Earth Engine.",
+    )
     min_pixels: int = Field(200, ge=0)
-    tile_size_km2: float = Field(400.0, gt=0)
 
     @model_validator(mode="after")
     def _ranges_ordered(self) -> MaskSettings:
@@ -196,6 +232,13 @@ LEGACY_COLUMN_ALIASES: dict[str, str] = {
     "continent_abbrev": "sword_cont_abb",
     "us_reach_id": "us_sword_reach_id",
     "ds_reach_id": "ds_sword_reach_id",
+}
+
+# Settings from earlier versions that are accepted with a warning and ignored.
+RETIRED_SETTINGS: dict[tuple[str, str], str] = {
+    ("masks", "tile_size_km2"): "downloads are now chunked by masks.chunk_px",
+    ("sword", "download_url"): "SWORD download details live in datasets.yaml",
+    ("sword", "md5"): "SWORD download details live in datasets.yaml",
 }
 
 RIVER_ID_COLUMNS = (
@@ -362,6 +405,16 @@ def load_settings(config_path: Path) -> ProjectSettings:
         raw = yaml.safe_load(f) or {}
     if not isinstance(raw, dict):
         raise ConfigError(["top level must be a mapping of settings"], config_path)
+    for (section, key), note in RETIRED_SETTINGS.items():
+        if isinstance(raw.get(section), dict) and key in raw[section]:
+            raw[section].pop(key)
+            log.warning(
+                "%s: `%s: %s` is no longer used (%s); you can delete it.",
+                config_path.name,
+                section,
+                key,
+                note,
+            )
     try:
         settings = ProjectSettings.model_validate(raw)
     except ValidationError as e:
@@ -372,6 +425,8 @@ def load_settings(config_path: Path) -> ProjectSettings:
     settings.rivers_table = _resolve(settings.rivers_table, base)
     if settings.sword.dir is not None:
         settings.sword.dir = _resolve(settings.sword.dir, base)
+    if settings.gee.key_file is not None:
+        settings.gee.key_file = _resolve(settings.gee.key_file, base)
     return settings
 
 

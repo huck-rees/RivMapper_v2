@@ -46,6 +46,7 @@ from shapely.geometry import LineString, MultiLineString, Point
 from shapely.ops import split, substring
 
 from .config import Project, ReachSettings, River
+from .crs import choose_analysis_crs, crs_to_string
 from .provenance import write_run_record
 from .results import FAILED, OK, StepResult, check_existing
 from .valley import fit_width_model, reach_breaks, valley_line
@@ -457,7 +458,10 @@ def build_reaches(
         for valley_widths, the valley line.
     """
     sword = sword.sort_values("reach_order").reset_index(drop=True)
-    utm = utm_crs_for(sword)
+    analysis_crs, crs_reason = choose_analysis_crs(
+        tuple(sword.to_crs(4326).total_bounds), settings.analysis_crs
+    )
+    utm = analysis_crs  # projected analysis CRS (UTM or LAEA)
     sword = sword.to_crs(utm)
 
     seg_len = sword.geometry.length.to_numpy()
@@ -642,7 +646,8 @@ def build_reaches(
         "unclipped_reaches": unclipped,
         "multipart_reaches": multipart,
         "overlap_km2": round(overlap_km2, 4),
-        "utm_crs": utm,
+        "analysis_crs": crs_to_string(analysis_crs),
+        "analysis_crs_reason": crs_reason,
     }
     if per_reach is not None:
         nw = (lines["valley_len"] / lines["width_ref"]).to_numpy()

@@ -41,7 +41,7 @@ def test_split_at_distances_preserves_length():
 
 def test_reaches_step_on_synthetic_river(synthetic_project):
     p = Project.load(synthetic_project)
-    t = run_pipeline(p)
+    t = run_pipeline(p, steps=["sword", "reaches"])
     assert t["status"].tolist() == ["ok", "ok"]
     import geopandas as gpd
 
@@ -72,7 +72,7 @@ def test_reaches_step_on_synthetic_river(synthetic_project):
 def test_missing_buffer_width_is_clear(synthetic_project):
     cfg = synthetic_project
     cfg.write_text(cfg.read_text().replace("buffer_width: 0.5", "buffer_width: null"))
-    t = run_pipeline(Project.load(cfg))
+    t = run_pipeline(Project.load(cfg), steps=["sword", "reaches"])
     assert t["status"].tolist() == ["ok", "failed"]
     assert "buffer_width" in t["message"].iloc[1]
 

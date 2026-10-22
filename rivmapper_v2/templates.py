@@ -58,8 +58,12 @@ sword:
   # SWORD `type` codes the tracer may walk through (1 = river).
   river_types: [1]
 
+# Google Earth Engine (step extract_masks). Sign in once with `rivmapper gee auth`,
+# then test with `rivmapper gee check rivmapper.yaml`.
 gee:
-  project: {_v(gee_project)}
+  project: {_v(gee_project)}         # Google Cloud project registered for Earth Engine
+  service_account: null      # headless servers only: service-account email
+  key_file: null             # ...and its JSON key (relative to this file)
 
 # Step 02: reach creation (see docs/methods/reaches.md).
 reaches:
@@ -77,6 +81,9 @@ reaches:
   len_slope: {_v(r["len_slope"])}            # v1 regression (Ganges, HydroRIVERS UPLAND_SKM)
   len_intercept: {_v(r["len_intercept"])}
   ds_trim_fraction: {_v(r["ds_trim_fraction"])}       # drop a last reach shorter than this x the one above it
+  # Projected CRS for every measured product: auto = UTM, or LAEA for rivers
+  # spanning > 3 deg from the UTM central meridian; or e.g. "EPSG:32754".
+  analysis_crs: {_v(r["analysis_crs"])}
   # Geometry details
   gap_tolerance_m: {_v(r["gap_tolerance_m"])}       # warn on gaps between SWORD reaches larger than this
   smoothing_window_multiplier: {_v(r["smoothing_window_multiplier"])}  # cut-line direction window = this x reach length
@@ -89,17 +96,19 @@ reaches:
   boundary_method: {_v(r["boundary_method"])}
   partition_spacing_m: {_v(r["partition_spacing_m"])}   # sample spacing for nearest_valley / nearest_centerline
 
-# Step 03: water masks (not yet ported to the package; validated now so the
-# rivers table can already carry these columns).
+# Step 03: raw water masks from Earth Engine (see docs/methods/conventions.md).
 masks:
-  year_start: {_v(m["year_start"])}
-  year_end: {_v(m["year_end"])}
+  year_start: {_v(m["year_start"])}         # required
+  year_end: {_v(m["year_end"])}           # required
   reach_start: {_v(m["reach_start"])}         # null = first reach
   reach_end: {_v(m["reach_end"])}           # null = last reach
-  dswe_level: {_v(m["dswe_level"])}          # DSWE class threshold, 1-4
-  percentile: {_v(m["percentile"])}
-  min_pixels: {_v(m["min_pixels"])}
-  tile_size_km2: {_v(m["tile_size_km2"])}
+  dswe_level: {_v(m["dswe_level"])}          # required: water = DSWE class 1..dswe_level (1-4)
+  percentile: {_v(m["percentile"])}          # per-pixel percentile of per-scene water (50 = median)
+  composite_windows: {_v(m["composite_windows"])}   # years +/- tried in order until the checks pass
+  min_clear_fraction: {_v(m["min_clear_fraction"])}  # share of reach polygon with >= 1 clear observation
+  min_water_fraction: {_v(m["min_water_fraction"])}  # detected / expected (width_ref x reach_len) water area
+  chunk_px: {_v(m["chunk_px"])}           # download chunk size (pixels per side)
+  min_pixels: {_v(m["min_pixels"])}          # used later by mask processing
 """
 
 

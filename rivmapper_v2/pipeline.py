@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable
 
 import pandas as pd
 
-from . import reaches, sword
+from . import masks, reaches, sword
 from .config import Project, River
 from .results import BLOCKED, StepResult
 
@@ -19,6 +19,7 @@ StepFn = Callable[[Project, list[River]], list[StepResult]]
 STEPS: dict[str, StepFn] = {
     sword.STEP: sword.run,
     reaches.STEP: reaches.run,
+    masks.STEP: masks.run,
 }
 
 

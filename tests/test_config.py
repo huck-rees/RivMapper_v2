@@ -105,3 +105,13 @@ def test_select_unknown_river(synthetic_project):
     p = Project.load(synthetic_project)
     with pytest.raises(KeyError, match="Nope"):
         p.select(["Nope"])
+
+
+def test_retired_settings_warn_not_fail(tmp_path, caplog):
+    cfg = write_project(
+        tmp_path,
+        f"river_name,sword_cont_abb,us_sword_reach_id,ds_sword_reach_id\n{ROW}\n",
+        "masks:\n  tile_size_km2: 400\n",
+    )
+    Project.load(cfg)
+    assert "tile_size_km2" in caplog.text and "no longer used" in caplog.text
