@@ -105,7 +105,7 @@ class ReachSettings(_Section):
         "drainage_regression: v1 channel-length regression on drainage area.",
     )
     widths_per_reach: float = Field(
-        80.0, gt=0, description="k: reach valley length in channel widths."
+        100.0, gt=0, description="k: reach valley length in channel widths."
     )
     valley_sigma_widths: float = Field(
         15.0, gt=0, description="Base valley-line smoothing scale (channel widths)."
@@ -134,11 +134,14 @@ class ReachSettings(_Section):
     smoothing_window_multiplier: float = Field(1.5, gt=0)
     n_tangent_samples: int = Field(21, ge=3)
     cut_extent_factor: float = Field(3.0, gt=0)
-    boundary_method: Literal["nearest_centerline", "cut_lines"] = Field(
-        "nearest_centerline",
-        description="How neighbouring reach polygons are separated: "
-        "nearest_centerline (each point goes to the closest reach centreline; "
-        "never overlaps) or cut_lines (perpendicular cuts at each boundary).",
+    boundary_method: Literal["nearest_valley", "nearest_centerline", "cut_lines"] = (
+        Field(
+            "nearest_valley",
+            description="How neighbouring reach polygons are separated: "
+            "nearest_valley (closest position along the valley line; boundaries "
+            "perpendicular to the valley), nearest_centerline (closest reach "
+            "channel centreline) or cut_lines (perpendicular cuts at each boundary).",
+        )
     )
     partition_spacing_m: float = Field(
         100.0,

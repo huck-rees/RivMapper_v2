@@ -24,9 +24,9 @@ def test_beni_end_to_end(tmp_path, real_sword_dir):
     assert len(gpd.read_file(r.paths.sword_reaches)) == 73
     assert len(gpd.read_file(r.paths.sword_nodes)) == 4890
     lines = gpd.read_file(r.paths.reach_lines)
-    # valley_widths (default): ~80 widths of valley per reach, growing downstream
+    # valley_widths (default): 100 widths of valley per reach, growing downstream
     nw = lines["valley_len"] / lines["width_ref"]
-    assert nw.iloc[:-1].between(79, 81).all()
+    assert nw.iloc[:-1].between(99, 101).all()
     assert r.paths.valley_line.exists()
 
     # drainage_regression reproduces the v2 notebook result (45 reaches)

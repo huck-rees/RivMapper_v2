@@ -4,17 +4,17 @@ How RivMapper v2 divides a river into analysis reaches: what is computed, which 
 
 ## Summary
 
-Reaches are defined by **down-valley length**, not along-channel length. Each reach spans a fixed number of channel widths of valley, **k × W(A)** with k = 80 by default, where **W(A)** is a power law of channel width against drainage area fitted to that river's SWORD node widths. Reaches therefore:
+Reaches are defined by **down-valley length**, not along-channel length. Each reach spans a fixed number of channel widths of valley, **k × W(A)** with k = 100 by default, where **W(A)** is a power law of channel width against drainage area fitted to that river's SWORD node widths. Reaches therefore:
 
-- contain a consistent number of meander wavelengths (~7) and bends (~15), however sinuous the channel is;
+- contain a consistent number of meander wavelengths (~9) and bends (~20), however sinuous the channel is;
 - lengthen downstream as the river widens, following the river's own measured hydraulic geometry;
 - have along-channel lengths that vary with sinuosity, as they should.
 
-Reach polygons are buffers of each reach centreline, separated from their neighbours by a nearest-centreline partition so they never overlap.
+Reach polygons cover a corridor around the channel. Neighbouring reaches are split by nearest position along the valley line, so boundaries run straight across the valley and polygons never overlap.
 
 ![Ok Tedi–Fly reaches before and after](img/oktedi_reaches_before_after.png)
 
-*Ok Tedi–Fly, buffer_width 0.15.* Left: v1 drainage-area regression on channel length (49 reaches). Right: 80 channel widths of valley length (25 reaches); the dashed line is the valley line.
+*Ok Tedi–Fly, buffer_width 0.15.* Left: the v1 rule (drainage-area regression on channel length, with perpendicular cut lines; 49 reaches). Right: 100 channel widths of valley length, split by nearest valley position (20 reaches). The dashed line is the valley line.
 
 ![Reach length profile](img/oktedi_reach_length_profile.png)
 
@@ -65,23 +65,26 @@ Starting at the upstream end, each reach's valley length is set to `widths_per_r
 - Breaks are placed at those valley distances and mapped to channel distance by interpolating between nodes. Each node's position along the merged channel line is forced to be monotonic first.
 - A final remainder shorter than `final_merge_fraction` (0.5) of its nominal length is merged into the reach above.
 
-**Why k = 80:**
-- Meander wavelength is ≈ 11 W (Leopold & Wolman, 1960; Williams, 1986), so 80 W is ≈ 7 wavelengths.
-- A bend is ≈ 10 W along the channel (Geyman et al., 2025), so 80 W of valley is ≈ 15 bends at modest sinuosity, and more where sinuosity is higher.
-- This meets the ≥ 15-bend aggregation of Greenberg & Ganti (2024), and well exceeds the ≥ 3-bend minimum reach scale of Greenberg et al. (2023).
+**Why k = 100:**
+- Meander wavelength is ≈ 11 W (Leopold & Wolman, 1960; Williams, 1986), so 100 W is ≈ 9 wavelengths.
+- A bend is ≈ 10 W along the channel (Geyman et al., 2025), so 100 W of valley is ≈ 20 bends at modest sinuosity, and more where sinuosity is higher.
+- This is comfortably above the ≥ 15-bend aggregation of Greenberg & Ganti (2024), and well above the ≥ 3-bend minimum reach scale of Greenberg et al. (2023).
+- k = 80 (≈ 15 bends) also meets these criteria. 100 was chosen for slightly longer, more stable reaches.
 
-*Ok Tedi–Fly:* 25 reaches, with valley length 8.5 → 32 km downstream (70–81 widths each). Along-channel length is 10.7–53 km, and reach sinuosity 1.15–2.4.
+*Ok Tedi–Fly:* 20 reaches, with valley length 10.6 → 48.6 km downstream (100–120 widths each; the last reach includes a merged remainder). Along-channel length is 13.4–81 km, and reach sinuosity 1.1–2.3.
 
 ### 4. Reach polygons
 
-- **Buffer:** each reach centreline is buffered by `buffer_width` × the reach's valley length. With 0.15 × 80 W this is a half-width of ≈ 12 W, so the corridor scales with river size rather than with sinuosity.
-- **Neighbours:** separated by a nearest-centreline partition (`boundary_method: nearest_centerline`).
-  - Points are sampled every 100 m along all reach centrelines.
-  - Their Voronoi cells are dissolved by reach, and each buffer is intersected with its reach's cell.
-  - Polygons therefore never overlap or leave wedge gaps, even where the channel doubles back. On the Ok Tedi, perpendicular cut lines (`boundary_method: cut_lines`) left 29 km² of overlap at a loop (figure below, drawn with v1-style reaches).
-
-    ![Cut lines vs nearest centreline](img/oktedi_boundaries_before_after.png)
-- **Head and mouth:** squared off with cuts perpendicular to the valley line.
+- **Corridor:** each reach centreline is buffered by `buffer_width` × the reach's valley length. With 0.15 × 100 W this is a half-width of ≈ 15 W, so the corridor scales with river size rather than with sinuosity. The buffers are merged into one corridor, and the river head and mouth are squared off with cuts perpendicular to the valley line.
+- **Splitting the corridor into reaches** (`boundary_method: nearest_valley`, the default):
+  - Points are sampled every 100 m along the valley line and labelled with the reach whose valley-distance interval contains them.
+  - Their Voronoi cells are dissolved by reach, and the corridor is intersected with each reach's cell.
+  - Every location therefore belongs to the reach at the nearest down-valley position. Boundaries run perpendicular to the valley line at each reach break, extend across the whole valley without crossing, and never overlap.
+  - Reach polygons are thus consistent with how reaches are defined, by valley distance. Any wider area dataset, such as a channel belt from Nyberg et al. (2023) or one mapped by hand, can be split among reaches using the same partition.
+  - Trade-off: where a meander loop crosses a reach boundary, that part of the channel falls in the neighbouring reach's polygon.
+- **Alternatives:**
+  - `nearest_centerline`: splits by the nearest reach *channel* centreline. Boundaries follow the channel, and far from it they depend on where the channel currently sits.
+  - `cut_lines`: the v1 approach, cuts perpendicular to the smoothed channel direction at each break. On the Ok Tedi this left 29 km² of overlap where the channel doubles back.
 
 ### Outputs
 
@@ -90,7 +93,7 @@ Starting at the upstream end, each reach's valley length is set to `widths_per_r
 | File | Contents |
 |---|---|
 | `{river}_reach_lines.gpkg` | Reach centrelines |
-| `{river}_reach_polygons.gpkg` | Reach polygons |
+| `{river}_reach_polygons.gpkg` | Reach polygons (corridor split by nearest valley position) |
 | `{river}_valley_line.gpkg` | The valley line |
 | `{river}_reaches_run.yaml` | Parameters, width-model coefficients and diagnostics |
 
@@ -113,18 +116,19 @@ The lines and polygons carry these fields:
 | Parameter | Default | Meaning |
 |---|---|---|
 | `length_method` | `valley_widths` | Or `drainage_regression` (v1 rule) |
-| `widths_per_reach` | 80 | k: valley length per reach in channel widths |
+| `widths_per_reach` | 100 | k: valley length per reach in channel widths |
 | `buffer_width` | – (required) | Buffer half-width as a fraction of reach valley length |
 | `valley_sigma_widths` | 15 | Base valley-line smoothing scale (W) |
 | `valley_sinuosity_factor` | 6 | Smoothing in sinuous reaches = factor × local sinuosity (W) |
 | `final_merge_fraction` | 0.5 | Merge a last reach shorter than this × nominal |
-| `boundary_method` | `nearest_centerline` | Or `cut_lines` |
-| `partition_spacing_m` | 100 | Centreline sampling for the nearest-centreline partition |
+| `boundary_method` | `nearest_valley` | Or `nearest_centerline`, `cut_lines` |
+| `partition_spacing_m` | 100 | Sampling spacing (m) for the nearest-valley / nearest-centreline partition |
 
 ## Limitations and planned upgrades
 
 - **Braided and anabranching rivers** (e.g. Bermejo): the SWORD single thread is only a proxy for the channel belt. Its smoothed version should still give a reasonable valley line. The planned upgrade is RivMAP-style: build the valley line from the multi-decade channel belt (union of Landsat water masks or JRC occurrence), taking the centreline as the mean of smoothed belt edges.
-- **Sensitivity:** before publication, report results at k = 40, 80 and 160, along with bends and sinuosity per reach.
+- **Sensitivity:** before publication, report results at k = 50, 100 and 200, along with bends and sinuosity per reach.
+- **Channel belt:** the corridor is sized to contain the 1985–2024 channel for mask extraction, not the full channel belt. The belt will come from Nyberg et al. (2023) or be mapped by hand, and is split among reaches with the same nearest-valley partition, extended across the valley.
 - **SWORD widths** are wetted widths from a single source, not bankfull widths. The binned power-law fit limits their noise, but the absolute reach length inherits any width bias.
 - **Ends:** the first and last reaches sit within the reflection-padded part of the valley line.
 
@@ -133,6 +137,7 @@ The lines and polygons carry these fields:
 - Geyman, E. C., et al. (2025). *Science Advances*, 11, eadu8574. https://doi.org/10.1126/sciadv.adu8574 (mean bend length ≈ 10 W)
 - Greenberg, E., Chadwick, A. J., & Ganti, V. (2023). A generalized area-based framework to quantify river mobility from remotely sensed imagery. *JGR: Earth Surface*, 128, e2023JF007189. https://doi.org/10.1029/2023JF007189 (reach scale ≥ 3 bends)
 - Greenberg, E., & Ganti, V. (2024). *Earth and Planetary Science Letters*, 634, 118674. https://doi.org/10.1016/j.epsl.2024.118674 (aggregation over > 15 bends; 139 rivers)
+- Nyberg, B., et al. (2023). *Nature Communications*. Global channel-belt dataset; full reference and DOI to be added.
 - Leopold, L. B., & Wolman, M. G. (1960). River meanders. *GSA Bulletin*, 71, 769–793. https://doi.org/10.1130/0016-7606(1960)71[769:RM]2.0.CO;2 (λ ≈ 11 W)
 - Rowland, J. C., et al. (2023). *JGR: Earth Surface*, 128, e2023JF007101. https://doi.org/10.1029/2023JF007101 (Arctic rivers; segment length did not bias erosion rates)
 - Schwenk, J., Khandelwal, A., Fratkin, M., Kumar, V., & Foufoula-Georgiou, E. (2017). High spatiotemporal resolution of river planform dynamics from Landsat: The RivMAP toolbox and results from the Ucayali River. *Earth and Space Science*, 4, 46–75. https://doi.org/10.1002/2016EA000196 (valley line from 50 W-smoothed channel-belt edges)
@@ -141,5 +146,5 @@ The lines and polygons carry these fields:
 
 **Check before citing in a manuscript.** These were gathered by literature review and not all were confirmed against the original text:
 - the exact Leopold & Wolman (1960) coefficient (λ = 11.0 W^1.01);
-- the full author lists for Geyman et al. (2025) and Rowland et al. (2023);
+- the full author lists for Geyman et al. (2025) and Rowland et al. (2023), and the full reference for Nyberg et al. (2023);
 - whether Greenberg & Ganti (2024) measure along the valley or the channel.

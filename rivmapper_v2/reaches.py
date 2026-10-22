@@ -1,7 +1,7 @@
 """Step 02 — divide each river into reaches and build reach polygons.
 
 Default (``length_method: valley_widths``): reaches are ``widths_per_reach``
-(k = 80) channel widths long measured along a smoothed *valley line*, with
+(k = 100) channel widths long measured along a smoothed *valley line*, with
 width from a per-river power law W(A) fitted to SWORD node widths, so
 reaches hold a consistent number of meander wavelengths and lengthen
 downstream (see ``valley.py`` and docs/methods/reaches.md). The v1 rule,
@@ -12,10 +12,13 @@ Each reach centreline is buffered by ``buffer_width`` × its valley length
 (channel length for drainage_regression). Neighbouring buffers are
 separated by ``boundary_method``:
 
-``nearest_centerline`` (default)
-    Every point goes to the reach whose centreline is closest (a Voronoi
-    partition of points sampled along the centrelines), so polygons never
-    overlap or leave wedge gaps, even where the channel loops back.
+``nearest_valley`` (default)
+    The buffers are merged into one corridor, which is split by nearest
+    position along the valley line (Voronoi partition of points sampled
+    along the valley line), so boundaries run perpendicular to the valley,
+    never overlap, and are consistent with valley-distance reaches.
+``nearest_centerline``
+    Every point goes to the reach whose channel centreline is closest.
 ``cut_lines``
     Perpendicular cuts at every boundary (original method); can overlap
     where the channel doubles back.
@@ -300,6 +303,43 @@ def nearest_centerline_cells(
     return out
 
 
+def nearest_valley_cells(
+    vl, reach_starts: np.ndarray, extent, spacing_m: float = 100.0
+) -> list:
+    """Partition ``extent`` by nearest position along the valley line.
+
+    Points are sampled every ``spacing_m`` along the valley line and
+    labelled with the reach whose valley-distance interval contains them;
+    their Voronoi cells are dissolved by reach. Near the valley line the
+    boundaries are perpendicular to it at each reach break, and they extend
+    without crossing across a wide valley.
+    """
+    import shapely
+
+    v = vl.valley_dist
+    d = np.r_[np.arange(0.0, v[-1], spacing_m), v[-1]]
+    px, py = np.interp(d, v, vl.x), np.interp(d, v, vl.y)
+    # drop duplicate coordinates (Voronoi needs distinct points)
+    keep = np.r_[True, np.hypot(np.diff(px), np.diff(py)) > 1e-6]
+    d, px, py = d[keep], px[keep], py[keep]
+    labels = np.clip(np.searchsorted(reach_starts, d, side="right") - 1, 0, None)
+    pts = shapely.points(px, py)
+    cells = shapely.get_parts(
+        shapely.voronoi_polygons(shapely.multipoints(pts), extend_to=extent)
+    )
+    point_idx, cell_idx = shapely.STRtree(cells).query(pts, predicate="within")
+    owner = np.full(len(cells), -1)
+    owner[cell_idx] = labels[point_idx]
+    out = []
+    for i in range(len(reach_starts)):
+        mine = cells[owner == i]
+        try:
+            out.append(shapely.coverage_union_all(mine))
+        except Exception:  # noqa: BLE001
+            out.append(shapely.union_all(mine))
+    return out
+
+
 def _total_overlap_km2(geoms: list) -> float:
     """Sum of pairwise intersection areas between all polygons."""
     import shapely
@@ -494,7 +534,49 @@ def build_reaches(
     n = len(reach_geoms)
     polys, unclipped, multipart = [], [], []
 
-    if settings.boundary_method == "nearest_centerline":
+    method = settings.boundary_method
+    if method == "nearest_valley" and vl is None:
+        log.info(
+            "  boundary_method nearest_valley needs a valley line "
+            "(length_method valley_widths); using nearest_centerline"
+        )
+        method = "nearest_centerline"
+
+    if method == "nearest_valley":
+        # One corridor (union of all reach buffers, head and mouth squared
+        # off), split by nearest position along the valley line, so reach
+        # boundaries run perpendicular to the valley, not the channel.
+        import shapely
+        from shapely.geometry import box
+
+        corridor = shapely.union_all(buffers)
+        corridor, ok_head = clip_by_cut(corridor, cuts[0], mids[0])
+        corridor, ok_mouth = clip_by_cut(corridor, cuts[-1], mids[-1])
+        if not ok_head:
+            unclipped.append(1)
+        if not ok_mouth:
+            unclipped.append(n)
+        extent = box(*corridor.bounds).buffer(1.0)
+        cells = nearest_valley_cells(
+            vl,
+            lines["valley_dist"].to_numpy(),
+            extent,
+            settings.partition_spacing_m,
+        )
+        for i in range(n):
+            poly = corridor.intersection(cells[i])
+            if poly.geom_type == "GeometryCollection":
+                poly = shapely.union_all(
+                    [
+                        g
+                        for g in poly.geoms
+                        if g.geom_type in ("Polygon", "MultiPolygon")
+                    ]
+                )
+            if poly.geom_type == "MultiPolygon":
+                multipart.append(i + 1)
+            polys.append(poly)
+    elif method == "nearest_centerline":
         # Neighbours are separated by the nearest-centreline partition; cut
         # lines are only used to square off the river head and mouth.
         from shapely.geometry import box
@@ -541,7 +623,7 @@ def build_reaches(
     if overlap_km2 > 0.01:
         log.warning(
             "  reach polygons overlap by %.2f km² in total — likely crossing "
-            "cut lines on a sharp bend; use boundary_method: nearest_centerline",
+            "cut lines on a sharp bend; use boundary_method: nearest_valley",
             overlap_km2,
         )
     if multipart:
@@ -551,12 +633,12 @@ def build_reaches(
             multipart,
         )
 
+    diag["boundary_method"] = method
     diagnostics = {
         **diag,
         "n_reaches": int(len(lines)),
         "river_length_km": round(float(cum_end[-1]) / 1000, 3),
         "trimmed_tail_km": round(trimmed_m / 1000, 3),
-        "boundary_method": settings.boundary_method,
         "unclipped_reaches": unclipped,
         "multipart_reaches": multipart,
         "overlap_km2": round(overlap_km2, 4),

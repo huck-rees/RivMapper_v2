@@ -67,7 +67,7 @@ reaches:
   #   along a smoothed valley line; W(A) is a width-vs-drainage-area power law
   #   fitted to SWORD widths. drainage_regression: v1 rule on channel length.
   length_method: {_v(r["length_method"])}
-  widths_per_reach: {_v(r["widths_per_reach"])}       # k: ~80 W = ~7 meander wavelengths, ~15 bends
+  widths_per_reach: {_v(r["widths_per_reach"])}       # k: 100 W = ~9 meander wavelengths, ~20 bends
   buffer_width: {_v(r["buffer_width"])}        # buffer half-width as a fraction of reach (valley) length (required)
   valley_sigma_widths: {_v(r["valley_sigma_widths"])}    # valley-line smoothing scale (channel widths)
   valley_sinuosity_factor: {_v(r["valley_sinuosity_factor"])} # smoothing in sinuous reaches = this x local sinuosity (widths)
@@ -82,11 +82,12 @@ reaches:
   smoothing_window_multiplier: {_v(r["smoothing_window_multiplier"])}  # cut-line direction window = this x reach length
   n_tangent_samples: {_v(r["n_tangent_samples"])}
   cut_extent_factor: {_v(r["cut_extent_factor"])}      # cut-line half-length = this x largest buffer
-  # How neighbouring polygons are separated: nearest_centerline (each point goes
-  # to the closest reach centreline; never overlaps) or cut_lines (perpendicular
-  # cuts at each boundary; can overlap where the channel loops back).
+  # How neighbouring polygons are separated: nearest_valley (closest position
+  # along the valley line; boundaries perpendicular to the valley), nearest_centerline
+  # (closest reach channel centreline) or cut_lines (perpendicular cuts at each
+  # boundary; can overlap where the channel loops back).
   boundary_method: {_v(r["boundary_method"])}
-  partition_spacing_m: {_v(r["partition_spacing_m"])}   # centreline sample spacing for nearest_centerline
+  partition_spacing_m: {_v(r["partition_spacing_m"])}   # sample spacing for nearest_valley / nearest_centerline
 
 # Step 03: water masks (not yet ported to the package; validated now so the
 # rivers table can already carry these columns).

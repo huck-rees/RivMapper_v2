@@ -62,8 +62,8 @@ def test_reaches_step_on_synthetic_river(synthetic_project):
         "width_ref",
         "geometry",
     ]
-    # constant width 100 m → every reach but the last is 80 widths of valley
-    assert np.allclose(lines["valley_len"].iloc[:-1], 8000.0)
+    # constant width 100 m → every reach but the last is 100 widths of valley
+    assert np.allclose(lines["valley_len"].iloc[:-1], 10_000.0)
     g = list(polys.geometry)
     overlap = sum(g[i].intersection(g[i + 1]).area for i in range(len(g) - 1))
     assert overlap < 1.0  # m²; cut lines separate neighbours
@@ -225,3 +225,33 @@ def test_valley_method_needs_nodes():
     sword, _, _ = _meandering_river(n_bends=10)
     with pytest.raises(RuntimeError, match="nodes"):
         build_reaches(sword, ReachSettings(buffer_width=0.15))
+
+
+def test_nearest_valley_boundaries_cross_the_valley():
+    """On a straight east-west valley, reach boundaries should be ~vertical
+    lines at the reach breaks, whatever the channel does."""
+    import shapely
+
+    from rivmapper_v2.reaches import build_reaches
+
+    sword, nodes, _ = _meandering_river()
+    b = build_reaches(
+        sword, ReachSettings(buffer_width=0.3, widths_per_reach=80), nodes
+    )
+    assert b.diagnostics["boundary_method"] == "nearest_valley"
+    assert b.diagnostics["overlap_km2"] < 1e-6
+    polys = list(b.polygons.geometry)
+    for i in range(len(polys) - 1):
+        shared = shapely.intersection(polys[i].boundary, polys[i + 1].boundary)
+        xs = shapely.get_coordinates(shared)[:, 0]
+        assert np.ptp(xs) < 0.05 * b.lines["valley_len"].iloc[i]
+
+
+def test_nearest_valley_falls_back_without_valley_line():
+    from rivmapper_v2.reaches import build_reaches
+
+    b = build_reaches(
+        _hairpin_sword(),
+        ReachSettings(buffer_width=0.5, length_method="drainage_regression"),
+    )
+    assert b.diagnostics["boundary_method"] == "nearest_centerline"
