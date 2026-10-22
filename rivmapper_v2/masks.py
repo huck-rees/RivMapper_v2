@@ -1,18 +1,19 @@
-"""Step 03 — extract raw Landsat DSWE water masks from Earth Engine.
+"""Step 03 — extract raw annual DSWE observation counts from Earth Engine.
 
-For each reach polygon and year, builds a DSWE water composite (Jones,
-2019) in Earth Engine and downloads it on the river's fixed 30 m grid in
-the river's analysis CRS (see docs/methods/conventions.md):
+For each reach polygon and calendar year, counts — over every clear
+Landsat scene that year — how often each pixel was observed and how often
+it was classified as water at each DSWE level (Jones, 2019), and downloads
+the counts on the river's fixed 30 m grid in the river's analysis CRS (see
+docs/methods/conventions.md).
 
-* **Grid:** origin snapped to multiples of 30 m in the analysis CRS (the CRS
-  of the reach polygons), so every reach and year aligns pixel for pixel.
-* **Values:** band 1 ``water`` = 0 dry, 1 water, 255 no data (outside the
-  reach polygon or no clear observation); band 2 ``n_obs`` = number of
-  clear Landsat observations in the composite (0–254).
-* **Composite window:** the year alone first; if too little of the polygon
-  has a clear observation, or detected water is far below the expected
-  wetted area (``width_ref × reach_len``), the window widens to ±1, then
-  ±2 years (``masks: composite_windows``). The window used is recorded.
+Raw files are an exact record of what Earth Engine returned: single year,
+no compositing window, no thresholds. Choosing a DSWE level and percentile
+happens later, in mask processing, from these counts.
+
+Bands (uint8; 255 = outside the reach polygon):
+
+* ``n_obs``   clear observations;
+* ``n_wet_1`` … ``n_wet_4``  observations with DSWE class 1..k.
 
 Outputs: ``{data_root}/{river}/masks/raw/{river}_r{NNN}_{year}.tif`` plus
 ``{river}_extract_masks_log.csv`` (one row per reach-year) and the run
@@ -28,7 +29,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -37,7 +37,7 @@ import numpy as np
 import pandas as pd
 
 from .config import ConfigError, Project, River
-from .gee import NODATA, Grid
+from .gee import COUNT_BANDS, NODATA, QA_MASK_BITS, Grid
 from .provenance import recorded_parameters, write_run_record
 from .results import FAILED, OK, STALE, StepResult, check_existing
 
@@ -45,7 +45,6 @@ log = logging.getLogger(__name__)
 
 STEP = "extract_masks"
 RES = 30.0
-STATS_SCALE = 60.0  # m; coarse scale for the window-selection check
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -109,11 +108,8 @@ def rasterize_inside(geom, grid: Grid) -> np.ndarray:
 # Earth Engine backend (real one in gee.py; tests pass a fake)
 # ─────────────────────────────────────────────────────────────────────
 class EEBackend(Protocol):
-    def composite(
-        self, geom_lonlat, year: int, window: int, level: int, pct: float
-    ): ...
+    def counts(self, geom_lonlat, year: int): ...
     def n_scenes(self, comp) -> int: ...
-    def stats(self, comp, geom_lonlat, scale: float) -> dict[str, float]: ...
     def fetch(self, comp, grid: Grid) -> dict[str, np.ndarray]: ...
 
 
@@ -125,121 +121,38 @@ class EarthEngine:
 
         self.gee = gee
 
-    def composite(self, geom_lonlat, year, window, level, pct):
+    def counts(self, geom_lonlat, year):
         geom = self.gee.ee_geometry(geom_lonlat)
-        image, size = self.gee.water_composite(geom, year, window, level, pct)
-        return {"image": image, "size": size, "geom": geom}
+        image, size = self.gee.dswe_counts(geom, year)
+        return {"image": image, "size": size}
 
     def n_scenes(self, comp) -> int:
         return int(comp["size"].getInfo())
 
-    def stats(self, comp, geom_lonlat, scale):
-        return self.gee.region_stats(comp["image"], comp["geom"], scale)
-
     def fetch(self, comp, grid):
-        return self.gee.compute_pixels(comp["image"], grid, ["water", "n_obs"])
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Window selection
-# ─────────────────────────────────────────────────────────────────────
-@dataclass
-class WindowChoice:
-    window: int | None  # None = no imagery at any window
-    n_scenes: int
-    clear_fraction: float
-    water_km2: float
-    expected_water_km2: float | None
-    passed: bool
-    reason: str
-
-
-def choose_window(
-    backend: EEBackend,
-    geom_lonlat,
-    year: int,
-    river: River,
-    expected_water_km2: float | None,
-) -> tuple[WindowChoice, object | None]:
-    """Try ``composite_windows`` in order; return the first that passes.
-
-    If none passes, returns the candidate with the largest clear fraction
-    (flagged ``passed=False``) so the year is still exported and can be
-    judged in processing.
-    """
-    m = river.masks
-    best: tuple[WindowChoice, object] | None = None
-    for w in m.composite_windows:
-        comp = backend.composite(geom_lonlat, year, w, m.dswe_level, m.percentile)
-        n = backend.n_scenes(comp)
-        if n == 0:
-            continue
-        s = backend.stats(comp, geom_lonlat, STATS_SCALE)
-        total = max(s.get("all", 0.0), 1.0)
-        clear = s.get("valid", 0.0) / total
-        water_km2 = s.get("water", 0.0) * STATS_SCALE**2 / 1e6
-        ok_clear = clear >= m.min_clear_fraction
-        ok_water = (
-            expected_water_km2 is None
-            or water_km2 >= m.min_water_fraction * expected_water_km2
-        )
-        reasons = []
-        if not ok_clear:
-            reasons.append(f"clear {clear:.0%} < {m.min_clear_fraction:.0%}")
-        if not ok_water:
-            reasons.append(
-                f"water {water_km2:.2f} km2 < {m.min_water_fraction:.0%} of "
-                f"expected {expected_water_km2:.2f} km2"
-            )
-        choice = WindowChoice(
-            w,
-            n,
-            clear,
-            water_km2,
-            expected_water_km2,
-            ok_clear and ok_water,
-            "; ".join(reasons) or "ok",
-        )
-        if choice.passed:
-            return choice, comp
-        if best is None or choice.clear_fraction > best[0].clear_fraction:
-            best = (choice, comp)
-    if best is None:
-        return WindowChoice(
-            None, 0, 0.0, 0.0, expected_water_km2, False, "no imagery"
-        ), None
-    return best
+        return self.gee.compute_pixels(comp["image"], grid, COUNT_BANDS)
 
 
 # ─────────────────────────────────────────────────────────────────────
 # Per reach-year extraction
 # ─────────────────────────────────────────────────────────────────────
 def _fingerprint(river: River, crs: str) -> dict:
-    m = river.masks
+    """Settings that determine a raw file's content."""
     return {
-        "dswe_level": m.dswe_level,
-        "percentile": m.percentile,
-        "composite_windows": list(m.composite_windows),
-        "min_clear_fraction": m.min_clear_fraction,
-        "min_water_fraction": m.min_water_fraction,
+        "product": "dswe_counts_v1",
+        "bands": COUNT_BANDS,
         "res_m": RES,
         "crs": crs,
-        "qa_mask_bits": [0, 1, 2, 3, 4, 5],
+        "qa_mask_bits": list(QA_MASK_BITS),
+        "landsat": "LT05+LE07(1999-04-15..2003-05-30)+LC08+LC09 C2 L2 T1",
     }
 
 
+_FINGERPRINT_KEYS = ("product", "bands", "res_m", "crs", "qa_mask_bits", "landsat")
+
+
 def _fingerprint_from(params: dict) -> dict:
-    keys = (
-        "dswe_level",
-        "percentile",
-        "composite_windows",
-        "min_clear_fraction",
-        "min_water_fraction",
-        "res_m",
-        "crs",
-        "qa_mask_bits",
-    )
-    return {k: params.get(k) for k in keys}
+    return {k: params.get(k) for k in _FINGERPRINT_KEYS}
 
 
 def _read_fingerprint(path: Path) -> dict | None:
@@ -253,9 +166,7 @@ def _read_fingerprint(path: Path) -> dict | None:
         return None
 
 
-def write_mask(
-    path: Path, grid: Grid, water: np.ndarray, n_obs: np.ndarray, tags: dict
-):
+def write_counts(path: Path, grid: Grid, bands: dict[str, np.ndarray], tags: dict):
     import rasterio
     from rasterio.transform import from_origin
 
@@ -265,7 +176,7 @@ def write_mask(
         "driver": "GTiff",
         "width": grid.width,
         "height": grid.height,
-        "count": 2,
+        "count": len(COUNT_BANDS),
         "dtype": "uint8",
         "crs": grid.crs,
         "transform": from_origin(grid.x0, grid.y0, grid.res, grid.res),
@@ -275,11 +186,17 @@ def write_mask(
         "blockxsize": 256,
         "blockysize": 256,
     }
+    descriptions = {
+        "n_obs": "clear Landsat observations in the year",
+        "n_wet_1": "observations with DSWE class 1",
+        "n_wet_2": "observations with DSWE class 1-2",
+        "n_wet_3": "observations with DSWE class 1-3",
+        "n_wet_4": "observations with DSWE class 1-4",
+    }
     with rasterio.open(tmp, "w", **profile) as dst:
-        dst.write(water.astype(np.uint8), 1)
-        dst.write(n_obs.astype(np.uint8), 2)
-        dst.set_band_description(1, "water (0 dry, 1 water, 255 no data)")
-        dst.set_band_description(2, "n_obs (clear Landsat observations)")
+        for i, name in enumerate(COUNT_BANDS, start=1):
+            dst.write(bands[name].astype(np.uint8), i)
+            dst.set_band_description(i, f"{name}: {descriptions[name]}")
         dst.update_tags(
             **{k: (v if isinstance(v, str) else json.dumps(v)) for k, v in tags.items()}
         )
@@ -296,47 +213,43 @@ def extract_reach_year(
     out_path: Path,
     fingerprint: dict,
 ) -> dict:
-    """Choose a window, download on ``grid``, mask outside the polygon, write."""
-    expected = None
-    if pd.notna(reach.get("width_ref")) and pd.notna(reach.get("reach_len")):
-        expected = float(reach["width_ref"]) * float(reach["reach_len"]) / 1e6
-    choice, comp = choose_window(backend, polygon_lonlat, year, river, expected)
-    row = {"ds_order": int(reach["ds_order"]), "year": year, **asdict(choice)}
-    if comp is None:
-        row["status"] = "no_imagery"
-        return row
-
-    water = np.full((grid.height, grid.width), NODATA, dtype=np.uint8)
-    n_obs = np.zeros((grid.height, grid.width), dtype=np.uint8)
-    for r, c, sub in chunks(grid, river.masks.chunk_px):
-        arr = backend.fetch(comp, sub)
-        water[r : r + sub.height, c : c + sub.width] = arr["water"]
-        n_obs[r : r + sub.height, c : c + sub.width] = arr["n_obs"]
+    """Download one reach-year of DSWE counts on ``grid`` and write it."""
+    comp = backend.counts(polygon_lonlat, year)
+    n_scenes = backend.n_scenes(comp)
+    shape = (grid.height, grid.width)
+    bands = {b: np.zeros(shape, dtype=np.uint8) for b in COUNT_BANDS}
+    if n_scenes > 0:
+        for r, c, sub in chunks(grid, river.masks.chunk_px):
+            arr = backend.fetch(comp, sub)
+            for b in COUNT_BANDS:
+                bands[b][r : r + sub.height, c : c + sub.width] = arr[b]
     inside = rasterize_inside(reach.geometry, grid)
-    water[~inside] = NODATA
-    n_obs[~inside] = 0
+    for b in COUNT_BANDS:
+        bands[b][~inside] = NODATA
 
-    valid = water != NODATA
-    row["clear_fraction_full_res"] = float(valid.sum() / max(inside.sum(), 1))
-    row["water_km2_full_res"] = float((water == 1).sum() * RES * RES / 1e6)
-    write_mask(
+    n_obs = bands["n_obs"][inside]
+    n_in = max(int(inside.sum()), 1)
+    write_counts(
         out_path,
         grid,
-        water,
-        n_obs,
+        bands,
         {
             "rivmapper_params": fingerprint,
             "river": river.name,
             "ds_order": str(int(reach["ds_order"])),
             "year": str(year),
-            "composite_window": str(choice.window),
-            "composite_years": f"{year - choice.window}-{year + choice.window}",
-            "n_scenes": str(choice.n_scenes),
-            "window_check": choice.reason,
+            "n_scenes": str(n_scenes),
         },
     )
-    row["status"] = "ok" if choice.passed else "flagged"
-    return row
+    return {
+        "ds_order": int(reach["ds_order"]),
+        "year": year,
+        "n_scenes": n_scenes,
+        "clear_fraction": round(float((n_obs > 0).sum() / n_in), 4),
+        "n_obs_median": float(np.median(n_obs)) if n_obs.size else 0.0,
+        "n_obs_p10": float(np.percentile(n_obs, 10)) if n_obs.size else 0.0,
+        "status": "ok" if n_scenes > 0 else "no_imagery",
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -359,7 +272,7 @@ def extract_masks(
     config_path: Path | None = None,
 ) -> StepResult:
     """Run step ``extract_masks`` for one river."""
-    river.require("masks", "year_start", "year_end", "dswe_level")
+    river.require("masks", "year_start", "year_end")
     p = river.paths
     if not p.reach_polygons.exists():
         return StepResult(
@@ -369,7 +282,6 @@ def extract_masks(
             f"reach polygons not found at {p.reach_polygons} — run the reaches step",
         )
     polys = gpd.read_file(p.reach_polygons)
-    lines = gpd.read_file(p.reach_lines) if p.reach_lines.exists() else None
     if polys.crs is None or polys.crs.is_geographic:
         raise ConfigError([f"{river.name}: reach polygons must be in a projected CRS"])
     epsg = polys.crs.to_epsg()
@@ -379,12 +291,6 @@ def extract_masks(
     lo = m.reach_start or 1
     hi = m.reach_end or int(polys["ds_order"].max())
     reaches = polys[polys["ds_order"].between(lo, hi)].sort_values("ds_order")
-    if lines is not None and "width_ref" in lines.columns:
-        reaches = reaches.drop(
-            columns=["width_ref", "reach_len"], errors="ignore"
-        ).merge(
-            lines[["ds_order", "width_ref", "reach_len"]], on="ds_order", how="left"
-        )
     years = list(range(m.year_start, m.year_end + 1))
     outputs = [p.raw_mask(int(o), y) for o in reaches["ds_order"] for y in years]
 
@@ -487,11 +393,6 @@ def extract_masks(
     msg = (
         f"{len(outputs) - len(missing)}/{len(outputs)} masks "
         f"({n_done} downloaded, {n_skip} already done"
-        + (
-            f", {status_counts.get('flagged', 0)} flagged"
-            if status_counts.get("flagged")
-            else ""
-        )
         + (
             f", {status_counts.get('no_imagery', 0)} no imagery"
             if status_counts.get("no_imagery")

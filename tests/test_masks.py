@@ -60,43 +60,50 @@ def test_pixel_grid_payload():
 
 # ── fake Earth Engine ───────────────────────────────────────────────────
 class FakeEE:
-    """Water in a horizontal band; window 0 is cloudy for even years."""
+    """10 clear scenes per year (none in 2003); water in a horizontal band.
+
+    In the band: wet in 6 (class 1), 8 (1-2), 9 (1-3), 9 (1-4) of 10 scenes.
+    """
 
     def __init__(self):
         self.calls = []
 
-    def composite(self, geom, year, window, level, pct):
-        self.calls.append((year, window))
-        return {"year": year, "window": window}
+    def counts(self, geom, year):
+        self.calls.append(year)
+        return {"year": year}
 
     def n_scenes(self, comp):
-        return 0 if comp["year"] == 2003 else 5 + comp["window"]
-
-    def stats(self, comp, geom, scale):
-        cloudy = comp["year"] % 2 == 0 and comp["window"] == 0
-        return {"all": 1000.0, "valid": 200.0 if cloudy else 950.0, "water": 300.0}
+        return 0 if comp["year"] == 2003 else 10
 
     def fetch(self, comp, grid):
         ys = grid.y0 - (np.arange(grid.height) + 0.5) * grid.res
-        water = np.where(np.abs(ys - ys.mean())[:, None] < 300, 1, 0)
-        water = np.broadcast_to(water, (grid.height, grid.width)).astype(np.uint8)
-        return {"water": water.copy(), "n_obs": np.full_like(water, 7)}
+        band = np.abs(ys - ys.mean())[:, None] < 300
+        band = np.broadcast_to(band, (grid.height, grid.width))
+        z = np.zeros(band.shape, np.uint8)
+        return {
+            "n_obs": np.full(band.shape, 10, np.uint8),
+            "n_wet_1": np.where(band, 6, z).astype(np.uint8),
+            "n_wet_2": np.where(band, 8, z).astype(np.uint8),
+            "n_wet_3": np.where(band, 9, z).astype(np.uint8),
+            "n_wet_4": np.where(band, 9, 1).astype(np.uint8),
+        }
 
 
 @pytest.fixture
 def mask_project(synthetic_project):
     cfg = synthetic_project
     cfg.write_text(
-        cfg.read_text()
-        + "masks:\n  year_start: 2002\n  year_end: 2004\n  dswe_level: 2\n"
-        "  chunk_px: 256\n  reach_end: 2\n  composite_windows: [0, 1, 2]\n"
+        cfg.read_text() + "masks:\n  year_start: 2002\n  year_end: 2004\n"
+        "  chunk_px: 256\n  reach_end: 2\n"
     )
     p = Project.load(cfg)
     run_pipeline(p, steps=["sword", "reaches"])
     return p
 
 
-def test_extract_masks_with_fake_backend(mask_project):
+def test_extract_counts_with_fake_backend(mask_project):
+    import pandas as pd
+
     from rivmapper_v2 import masks
 
     p = mask_project
@@ -105,56 +112,70 @@ def test_extract_masks_with_fake_backend(mask_project):
     [res] = masks.run(p, [river], backend=fake)
     assert res.status == "ok", res.message
     paths = river.paths
-    # 2 reaches x 3 years, 2003 has no imagery
-    assert paths.raw_mask(1, 2002).exists() and not paths.raw_mask(1, 2003).exists()
-    # even year: window 0 too cloudy -> widened to 1
-    assert (2002, 0) in fake.calls and (2002, 1) in fake.calls
+    # every reach-year gets a file, including the no-imagery year
+    for r in (1, 2):
+        for y in (2002, 2003, 2004):
+            assert paths.raw_mask(r, y).exists()
+    assert sorted(fake.calls) == [
+        2002,
+        2002,
+        2003,
+        2003,
+        2004,
+        2004,
+    ]  # one per reach-year
     with rasterio.open(paths.raw_mask(1, 2002)) as src:
-        assert src.count == 2 and src.nodata == NODATA and src.dtypes[0] == "uint8"
+        assert src.count == 5 and src.nodata == NODATA and src.dtypes[0] == "uint8"
+        assert [d.split(":")[0] for d in src.descriptions] == [
+            "n_obs",
+            "n_wet_1",
+            "n_wet_2",
+            "n_wet_3",
+            "n_wet_4",
+        ]
         assert src.crs.to_string().startswith("EPSG:327")
         assert src.transform.a == 30 and src.transform.c % 30 == 0
-        assert src.tags()["composite_window"] == "1"
-        assert json.loads(src.tags()["rivmapper_params"])["qa_mask_bits"] == [
-            0,
-            1,
-            2,
-            3,
-            4,
-            5,
-        ]
-        w = src.read(1)
-        assert set(np.unique(w)) <= {0, 1, NODATA}
-        assert (w == NODATA).any() and (w == 1).any()  # outside polygon + water
+        assert src.tags()["n_scenes"] == "10"
+        assert json.loads(src.tags()["rivmapper_params"])["product"] == "dswe_counts_v1"
+        n_obs, w1, w2, w3, w4 = src.read()
+        inside = n_obs != NODATA
+        assert (~inside).any() and inside.any()
+        for b in (w1, w2, w3, w4):
+            assert (b[~inside] == NODATA).all()
+        # counts are nested and never exceed n_obs
+        assert (w1[inside] <= w2[inside]).all() and (w2[inside] <= w3[inside]).all()
+        assert (w3[inside] <= w4[inside]).all() and (w4[inside] <= n_obs[inside]).all()
+        assert set(np.unique(w2[inside])) == {0, 8}
+    with rasterio.open(paths.raw_mask(1, 2003)) as src:
+        n_obs = src.read(1)
+        assert set(np.unique(n_obs)) <= {0, NODATA}
     with (
         rasterio.open(paths.raw_mask(1, 2004)) as a,
         rasterio.open(paths.raw_mask(2, 2004)) as b,
     ):
-        # both reaches on the same river grid
         assert (a.transform.c - b.transform.c) % 30 == 0
         assert (a.transform.f - b.transform.f) % 30 == 0
-    import pandas as pd
-
     log = pd.read_csv(paths.masks_log)
     assert len(log) == 6
-    assert set(log.status) == {"ok", "no_imagery"}
+    assert log.set_index(["ds_order", "year"]).loc[(1, 2003), "status"] == "no_imagery"
+    assert (log.loc[log.status == "ok", "n_obs_median"] == 10).all()
 
-    # Second run: nothing new to download.
+    # Second run: everything already there.
     fake2 = FakeEE()
     [res2] = masks.run(p, [river], backend=fake2)
-    assert res2.status in ("ok", "skipped")
-    assert all(y == 2003 for y, _ in fake2.calls)  # only the no-imagery year retried
+    assert res2.status == "skipped" and fake2.calls == []
 
 
-def test_changed_settings_are_stale(mask_project, synthetic_project):
+def test_dswe_level_change_does_not_invalidate_raw(mask_project, synthetic_project):
+    """DSWE level / percentile are processing choices: raw stays valid."""
     from rivmapper_v2 import masks
 
-    p = mask_project
-    masks.run(p, [p.river("Synth")], backend=FakeEE())
+    masks.run(mask_project, [mask_project.river("Synth")], backend=FakeEE())
     cfg = synthetic_project
-    cfg.write_text(cfg.read_text().replace("dswe_level: 2", "dswe_level: 3"))
+    cfg.write_text(cfg.read_text() + "  dswe_level: 3\n  percentile: 75\n")
     p2 = Project.load(cfg)
     [res] = masks.run(p2, [p2.river("Synth")], backend=FakeEE())
-    assert res.status == "stale"
+    assert res.status == "skipped"
 
 
 def test_missing_years_is_clear_error(synthetic_project):
@@ -173,22 +194,11 @@ def test_missing_gee_project_message(mask_project):
     assert res.status == "failed" and "gee.project" in res.message
 
 
-def test_default_is_single_year(synthetic_project):
-    from rivmapper_v2 import masks
-
+def test_retired_window_settings_are_ignored(synthetic_project, caplog):
     cfg = synthetic_project
     cfg.write_text(
-        cfg.read_text()
-        + "masks:\n  year_start: 2002\n  year_end: 2002\n  dswe_level: 2\n"
-        "  reach_end: 1\n"
+        cfg.read_text() + "masks:\n  year_start: 2002\n  year_end: 2002\n"
+        "  composite_windows: [0, 1, 2]\n  min_clear_fraction: 0.5\n"
     )
-    p = Project.load(cfg)
-    run_pipeline(p, steps=["sword", "reaches"])
-    fake = FakeEE()
-    [res] = masks.run(p, [p.river("Synth")], backend=fake)
-    assert fake.calls == [(2002, 0)]  # cloudy year is not widened
-    import pandas as pd
-
-    log = pd.read_csv(p.river("Synth").paths.masks_log)
-    assert log.status.tolist() == ["flagged"]
-    assert res.status == "ok"
+    Project.load(cfg)
+    assert "composite_windows" in caplog.text

@@ -40,7 +40,11 @@ Each river has **one projected analysis CRS**. Every product used for measuremen
 - **Grid origin:** snapped to multiples of 30 m in the analysis CRS, one grid per river: the top-left corner of the union of the reach polygons, rounded outward. Each reach raster is the smallest window of that grid covering its polygon, so every reach and every year lines up pixel for pixel. Downloads use Earth Engine `computePixels` with an explicit pixel grid (CRS + affine transform) to guarantee this.
 - **One reprojection only:** imagery is reprojected once, in Earth Engine, at export, by nearest-neighbour. Local processing never resamples.
 
-## Mask values ✅ (raw masks; processed masks 🔜)
+## Raster values
+
+**Raw masks** (`masks/raw/`) ✅: five uint8 count bands, `n_obs` and `n_wet_1` … `n_wet_4`. These are clear observations in the calendar year, and how many of them had DSWE class 1..k. 255 = outside the reach polygon (nodata), and counts are capped at 254. `n_obs = 0` inside the polygon means no clear observation that year.
+
+**Processed masks** (`masks/processed/`) 🔜:
 
 | Value | Meaning |
 |---|---|
@@ -48,7 +52,7 @@ Each river has **one projected analysis CRS**. Every product used for measuremen
 | 1 | Water |
 | 255 | No data: outside the reach polygon, or no clear observation |
 
-Band 1 (`water`) holds these values. Raw masks also carry band 2 (`n_obs`), the number of clear Landsat observations in the composite (0–254). GeoTIFF nodata is set to 255, and the data type is uint8. Keeping "dry" and "no data" separate is essential for area and mobility metrics. v1-era masks used 0 for both.
+uint8, nodata 255. Keeping "dry" and "no data" separate is essential for area and mobility metrics. v1-era masks used 0 for both.
 
 ## Units and naming
 

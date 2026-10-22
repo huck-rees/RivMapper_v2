@@ -96,19 +96,18 @@ reaches:
   boundary_method: {_v(r["boundary_method"])}
   partition_spacing_m: {_v(r["partition_spacing_m"])}   # sample spacing for nearest_valley / nearest_centerline
 
-# Step 03: raw water masks from Earth Engine (see docs/methods/conventions.md).
+# Step 03: raw annual DSWE observation counts from Earth Engine (extract_masks),
+# then mask processing (planned). See docs/methods/masks.md.
 masks:
-  year_start: {_v(m["year_start"])}         # required
-  year_end: {_v(m["year_end"])}           # required
+  year_start: {_v(m["year_start"])}         # required: first calendar year to extract
+  year_end: {_v(m["year_end"])}           # required: last calendar year to extract
   reach_start: {_v(m["reach_start"])}         # null = first reach
   reach_end: {_v(m["reach_end"])}           # null = last reach
-  dswe_level: {_v(m["dswe_level"])}          # required: water = DSWE class 1..dswe_level (1-4)
-  percentile: {_v(m["percentile"])}          # per-pixel percentile of per-scene water (50 = median)
-  composite_windows: {_v(m["composite_windows"])}       # [0] = each year on its own (no widening); [0, 1, 2] widens on failed checks
-  min_clear_fraction: {_v(m["min_clear_fraction"])}  # check: share of reach polygon with >= 1 clear observation
-  min_water_fraction: {_v(m["min_water_fraction"])}  # check: detected / expected (width_ref x reach_len) water area
   chunk_px: {_v(m["chunk_px"])}           # download chunk size (pixels per side)
-  min_pixels: {_v(m["min_pixels"])}          # used later by mask processing
+  # Used later by mask processing (not by extraction):
+  dswe_level: {_v(m["dswe_level"])}          # water = DSWE class 1..dswe_level (1-4)
+  percentile: {_v(m["percentile"])}          # per-pixel percentile of per-scene water (50 = median)
+  min_pixels: {_v(m["min_pixels"])}
 """
 
 

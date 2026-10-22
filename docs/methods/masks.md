@@ -1,8 +1,8 @@
 # Water masks (step `extract_masks`)
 
-How RivMapper v2 extracts annual Landsat water masks from Google Earth Engine. Code: [`rivmapper_v2/gee.py`](../../rivmapper_v2/gee.py) (Earth Engine) and [`rivmapper_v2/masks.py`](../../rivmapper_v2/masks.py) (step logic). Grid and value conventions: [conventions.md](conventions.md).
+How RivMapper v2 extracts annual Landsat water observations from Google Earth Engine. Code: [`rivmapper_v2/gee.py`](../../rivmapper_v2/gee.py) (Earth Engine) and [`rivmapper_v2/masks.py`](../../rivmapper_v2/masks.py) (step logic). Grid and value conventions: [conventions.md](conventions.md).
 
-Mask processing (`raw/` → `processed/`) is a separate, later step.
+**Design.** The raw product is a faithful record of what Earth Engine provides for each calendar year. Raw files hold **counts**: how many clear observations each pixel had that year, and how many of those were water at each DSWE level. Raw extraction applies no compositing window, DSWE threshold or percentile. Those choices are made later, in mask processing, from the counts, so they can be compared or calibrated per river without downloading again.
 
 ## Imagery
 
@@ -15,34 +15,29 @@ Mask processing (`raw/` → `processed/`) is a separate, later step.
 
 ## Water classification
 
-Each clear observation is classified with the Dynamic Surface Water Extent (DSWE) tests of Jones (2019). The classes are 0 not water, 1 high-confidence water, 2 moderate-confidence water, 3 potential wetland, and 4 low-confidence water.
+Each clear observation is classified with the Dynamic Surface Water Extent (DSWE) tests of Jones (2019). The classes are 0 not water, 1 high-confidence water, 2 moderate-confidence water, 3 potential wetland, and 4 low-confidence or partial water.
 
-A pixel counts as water in that scene if its class is between 1 and `dswe_level`.
+## Annual counts (the raw product)
 
-## Annual composite
+For each reach and calendar year *Y*, over every clear scene acquired from 1 January to 31 December of *Y*:
 
-For a target year *Y* and window half-width *w*:
+| Band | Count |
+|---|---|
+| `n_obs` | Clear observations (not masked by `QA_PIXEL`) |
+| `n_wet_1` | Observations with DSWE class 1 |
+| `n_wet_2` | Observations with DSWE class 1–2 |
+| `n_wet_3` | Observations with DSWE class 1–3 |
+| `n_wet_4` | Observations with DSWE class 1–4 |
 
-- **Water:** across all clear scenes in years *Y − w* to *Y + w*, take the per-pixel `percentile` (default 50, the median) of the binary water series. A pixel is water if that value is ≥ 0.5, and dry otherwise.
-- **No observation:** pixels with no clear observation get 255 (no data).
-- **Observation count:** the number of clear observations is kept as band `n_obs`.
+The counts are nested: `n_wet_1 ≤ n_wet_2 ≤ n_wet_3 ≤ n_wet_4 ≤ n_obs`. Counts are capped at 254. A year with no scenes still gets a file, with `n_obs = 0` everywhere inside the polygon, and is logged as `no_imagery`.
 
-**Single-year by default:** raw masks use each year on its own (`composite_windows: [0]`), so they are an exact record of what Earth Engine returned for that year.
-
-Two checks are still run at 60 m over the reach polygon and recorded, but they don't change the mask:
-
-1. **Clear coverage:** at least `min_clear_fraction` (default 0.5) of the polygon has one or more clear observations.
-2. **Plausible water area:** the detected water area is at least `min_water_fraction` (default 0.5) of the expected wetted area, `width_ref × reach_len` from the reaches step.
-
-Years that fail are marked `flagged` in the log. Years with no scenes are marked `no_imagery`, and no file is written.
-
-**Optional widening:** setting e.g. `composite_windows: [0, 1, 2]` makes a failed year retry with year ± 1, then ± 2. The first window that passes is used; if none does, the one with the best clear coverage is kept. The window used is stored in each file and in the log.
+**From counts to a water mask (processing, planned).** For DSWE level *k*, a pixel's wet frequency in year *Y* is *f* = `n_wet_k / n_obs`. A per-pixel percentile *p* of the binary wet/dry series is then a threshold on *f*. For example, the median (*p* = 50) means water where *f* ≥ 0.5. Pixels with `n_obs = 0` are no data. Choosing *k* and *p* per river (by width matching, SWOT-era calibration, sensitivity plateaus or sensor-transition consistency) is a processing-step decision.
 
 ## Download
 
-- **Grid:** each reach is downloaded on the river's fixed 30 m grid in the analysis CRS ([conventions.md](conventions.md)), using Earth Engine `computePixels` with an explicit pixel grid.
+- **Grid:** each reach-year is downloaded on the river's fixed 30 m grid in the analysis CRS ([conventions.md](conventions.md)), using Earth Engine `computePixels` with an explicit pixel grid.
 - **Chunking:** large reaches are fetched in chunks of `chunk_px` × `chunk_px` pixels and assembled locally. Chunks are aligned to the grid, so no merging or resampling is needed.
-- **Polygon mask:** pixels whose centre lies outside the reach polygon are set to 255.
+- **Polygon mask:** pixels whose centre lies outside the reach polygon are set to 255 in every band.
 
 ## Outputs
 
@@ -50,26 +45,27 @@ Years that fail are marked `flagged` in the log. Years with no scenes are marked
 
 | File | Contents |
 |---|---|
-| `raw/{river}_r{NNN}_{year}.tif` | uint8, two bands. `water` is 0 dry, 1 water, 255 no data. `n_obs` is the clear-observation count. Tags hold the settings, composite window and years, scene count and check result. |
-| `{river}_extract_masks_log.csv` | One row per reach-year: window, scenes, clear fraction, water and expected area (km²), and status (`ok`, `flagged`, `no_imagery`, `failed`) |
+| `raw/{river}_r{NNN}_{year}.tif` | uint8, five bands (`n_obs`, `n_wet_1` … `n_wet_4`), nodata 255. Tags hold the product version, settings and scene count. |
+| `{river}_extract_masks_log.csv` | One row per reach-year: scenes, clear fraction (share of the polygon with `n_obs` ≥ 1), median and 10th-percentile `n_obs`, and status (`ok`, `no_imagery`, `failed`) |
 | `{river}_extract_masks_run.yaml` | Run record: parameters, analysis CRS, grid origin, counts |
 
 **Re-runs:**
-- Files already made with the same settings are skipped, so an interrupted run resumes.
-- If settings change after some files exist, the step reports `stale` rather than mixing old and new files. Use `--overwrite` to rebuild.
+- Files already made with the same product version and grid are skipped, so an interrupted run resumes.
+- Changing `dswe_level` or `percentile` does not invalidate raw files.
+- If the product or grid changes after files exist, the step reports `stale`. Use `--overwrite` to rebuild.
 
 ## Parameters (`masks:` in `rivmapper.yaml`; all can be set per river)
 
-| Parameter | Default | Meaning |
+| Parameter | Default | Used by |
 |---|---|---|
-| `year_start`, `year_end` | — (required) | Years to extract |
-| `reach_start`, `reach_end` | all | Reach range (`ds_order`) |
-| `dswe_level` | — (required) | Water = DSWE class 1..`dswe_level` |
-| `percentile` | 50 | Per-pixel percentile of per-scene water |
-| `composite_windows` | `[0]` | Window half-widths (years) tried in order; `[0]` = single year, no widening |
-| `min_clear_fraction` | 0.5 | Clear-coverage check |
-| `min_water_fraction` | 0.5 | Water-area check (fraction of expected) |
-| `chunk_px` | 2048 | Download chunk size (pixels per side) |
+| `year_start`, `year_end` | — (required) | Extraction: calendar years to extract |
+| `reach_start`, `reach_end` | all | Extraction: reach range (`ds_order`) |
+| `chunk_px` | 2048 | Extraction: download chunk size (pixels per side) |
+| `dswe_level` | — | Processing: water = DSWE class 1..`dswe_level` |
+| `percentile` | 50 | Processing: per-pixel percentile of the wet/dry series |
+| `min_pixels` | 200 | Processing |
+
+Settings from the earlier windowed design (`composite_windows`, `min_clear_fraction`, `min_water_fraction`) are ignored, with a warning.
 
 ## References
 

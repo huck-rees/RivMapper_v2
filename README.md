@@ -129,7 +129,7 @@ If the old working directory already holds a `SWORD/` folder, the new config kee
 
 - [CRS and data conventions](docs/methods/conventions.md): projections, raster grid, mask values, units
 - [Reach definition](docs/methods/reaches.md): valley line, reach length, reach polygons
-- [Water masks](docs/methods/masks.md): Landsat, DSWE, compositing, download
+- [Water masks](docs/methods/masks.md): Landsat, DSWE, annual observation counts, download
 
 ## Pipeline steps
 
@@ -137,7 +137,7 @@ If the old working directory already holds a `SWORD/` folder, the new config kee
 |---|---|---|
 | `sword` | `rivmapper_v2/sword.py` | `{river}/sword/`: traced SWORD reaches and nodes |
 | `reaches` | `rivmapper_v2/reaches.py`, `valley.py` | `{river}/reaches/`: reach lines, polygons and valley line. Reaches are 100 channel widths of valley length, split by nearest position along the valley, so polygons never overlap. Method and citations: [docs/methods/reaches.md](docs/methods/reaches.md) |
-| `extract_masks` | `rivmapper_v2/masks.py`, `gee.py` | `{river}/masks/raw/`: annual DSWE water masks from Earth Engine, on the river's 30 m grid |
+| `extract_masks` | `rivmapper_v2/masks.py`, `gee.py` | `{river}/masks/raw/`: annual Landsat DSWE observation counts from Earth Engine (`n_obs`, `n_wet_1`…`n_wet_4`), on the river's 30 m grid |
 | mask processing | — | Planned: `{river}/masks/processed/` |
 
 ## Repository structure

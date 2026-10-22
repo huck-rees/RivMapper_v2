@@ -172,25 +172,6 @@ class MaskSettings(_Section):
     reach_end: int | None = Field(None, ge=1)
     dswe_level: int | None = Field(None, ge=1, le=4)
     percentile: float = Field(50.0, ge=0, le=100)
-    composite_windows: list[int] = Field(
-        default_factory=lambda: [0],
-        description="Half-widths (years) tried in order for each year's "
-        "composite: 0 = that year only (default: raw masks are exactly one "
-        "year); e.g. [0, 1, 2] widens to year +/- 1, +/- 2 when checks fail.",
-    )
-    min_clear_fraction: float = Field(
-        0.5,
-        ge=0,
-        le=1,
-        description="Widen the window if fewer than this share of the reach "
-        "polygon has at least one clear observation.",
-    )
-    min_water_fraction: float = Field(
-        0.5,
-        ge=0,
-        description="Widen the window if detected water area is below this "
-        "share of the expected wetted area (width_ref x channel length).",
-    )
     chunk_px: int = Field(
         2048,
         ge=256,
@@ -240,6 +221,9 @@ RETIRED_SETTINGS: dict[tuple[str, str], str] = {
     ("masks", "tile_size_km2"): "downloads are now chunked by masks.chunk_px",
     ("sword", "download_url"): "SWORD download details live in datasets.yaml",
     ("sword", "md5"): "SWORD download details live in datasets.yaml",
+    ("masks", "composite_windows"): "raw masks are single-year DSWE counts",
+    ("masks", "min_clear_fraction"): "raw masks are single-year DSWE counts",
+    ("masks", "min_water_fraction"): "raw masks are single-year DSWE counts",
 }
 
 RIVER_ID_COLUMNS = (

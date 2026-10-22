@@ -214,35 +214,40 @@ def dswe(image):
     return out.rename("dswe").updateMask(t.mask())
 
 
-def water_composite(
-    geometry, year: int, window: int, dswe_level: int, percentile: float
-):
-    """Two-band composite for ``year`` ± ``window`` years.
+COUNT_BANDS = ["n_obs", "n_wet_1", "n_wet_2", "n_wet_3", "n_wet_4"]
+COUNT_MAX = 254  # counts are capped so 255 stays free for "no data"
 
-    Band ``water``: 1 where the per-pixel ``percentile`` of per-scene binary
-    water (DSWE class 1..``dswe_level``) is ≥ 0.5, else 0; ``NODATA`` where
-    there is no clear observation. Band ``n_obs``: clear observations
-    (capped at 254). Both uint8.
+
+def dswe_counts(geometry, year: int):
+    """Annual DSWE observation counts for ``year`` (calendar year).
+
+    Returns (image, n_scenes). The image has five uint8 bands, each a count
+    over all clear Landsat scenes in the year:
+
+    * ``n_obs``   clear observations (pixel not masked by QA_PIXEL);
+    * ``n_wet_k`` observations with DSWE class 1..k, for k = 1..4.
+
+    Any DSWE level and percentile can be applied later from these counts.
     """
     ee = _ee()
-    start, end = f"{year - window}-01-01", f"{year + window + 1}-01-01"
-    col = landsat_collection(geometry, start, end)
+    col = landsat_collection(geometry, f"{year}-01-01", f"{year + 1}-01-01")
 
-    def _binary(img):
+    def _per_scene(img):
         d = dswe(img)
-        return d.gte(1).And(d.lte(dswe_level)).rename("w")
+        return (
+            ee.Image.cat(
+                d.gte(0),
+                d.eq(1),
+                d.gte(1).And(d.lte(2)),
+                d.gte(1).And(d.lte(3)),
+                d.gte(1).And(d.lte(4)),
+            )
+            .rename(COUNT_BANDS)
+            .unmask(0)
+        )
 
-    binary = col.map(_binary)
-    pct = binary.reduce(ee.Reducer.percentile([percentile])).gte(0.5)
-    n_obs = binary.count().unmask(0)
-    water = (
-        ee.Image(NODATA)
-        .where(n_obs.gt(0), pct.unmask(NODATA))
-        .rename("water")
-        .toUint8()
-    )
-    n_obs = n_obs.min(254).rename("n_obs").toUint8()
-    return water.addBands(n_obs), col.size()
+    counts = col.map(_per_scene).sum().min(COUNT_MAX).toUint8().rename(COUNT_BANDS)
+    return counts, col.size()
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -289,29 +294,6 @@ def compute_pixels(image, grid: Grid, bands: list[str]) -> dict[str, np.ndarray]
         }
     )
     return {b: np.asarray(arr[b]) for b in bands}
-
-
-def region_stats(image, geometry, scale: float) -> dict[str, float]:
-    """Clear-pixel and water fractions of ``image`` over ``geometry`` (coarse)."""
-    ee = _ee()
-    w = image.select("water")
-    valid = w.neq(NODATA)
-    stats = (
-        ee.Image.cat(
-            valid.rename("valid"),
-            w.eq(1).rename("water"),
-            ee.Image(1).rename("all"),
-        )
-        .reduceRegion(
-            reducer=ee.Reducer.sum(),
-            geometry=geometry,
-            scale=scale,
-            maxPixels=1e9,
-            bestEffort=True,
-        )
-        .getInfo()
-    )
-    return {k: float(v or 0.0) for k, v in stats.items()}
 
 
 def ee_geometry(geom_lonlat) -> Any:
