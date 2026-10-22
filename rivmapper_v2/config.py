@@ -173,9 +173,10 @@ class MaskSettings(_Section):
     dswe_level: int | None = Field(None, ge=1, le=4)
     percentile: float = Field(50.0, ge=0, le=100)
     composite_windows: list[int] = Field(
-        default_factory=lambda: [0, 1, 2],
+        default_factory=lambda: [0],
         description="Half-widths (years) tried in order for each year's "
-        "composite: 0 = that year only, 1 = year +/- 1, ...",
+        "composite: 0 = that year only (default: raw masks are exactly one "
+        "year); e.g. [0, 1, 2] widens to year +/- 1, +/- 2 when checks fail.",
     )
     min_clear_fraction: float = Field(
         0.5,

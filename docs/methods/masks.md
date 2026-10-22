@@ -27,12 +27,16 @@ For a target year *Y* and window half-width *w*:
 - **No observation:** pixels with no clear observation get 255 (no data).
 - **Observation count:** the number of clear observations is kept as band `n_obs`.
 
-**Choosing the window:** `composite_windows` (default `[0, 1, 2]`) are tried in order, and the first that passes both checks is used. The checks are run at 60 m over the reach polygon:
+**Single-year by default:** raw masks use each year on its own (`composite_windows: [0]`), so they are an exact record of what Earth Engine returned for that year.
+
+Two checks are still run at 60 m over the reach polygon and recorded, but they don't change the mask:
 
 1. **Clear coverage:** at least `min_clear_fraction` (default 0.5) of the polygon has one or more clear observations.
-2. **Plausible water area:** the detected water area is at least `min_water_fraction` (default 0.5) of the expected wetted area, `width_ref × reach_len` from the reaches step. This guards against under-detection in persistently cloudy regions such as the Ok Tedi.
+2. **Plausible water area:** the detected water area is at least `min_water_fraction` (default 0.5) of the expected wetted area, `width_ref × reach_len` from the reaches step.
 
-If no window passes, the window with the best clear coverage is exported and the year is marked `flagged`. Years with no scenes at any window are marked `no_imagery` and no file is written. The window used is stored in each file and in the log.
+Years that fail are marked `flagged` in the log. Years with no scenes are marked `no_imagery`, and no file is written.
+
+**Optional widening:** setting e.g. `composite_windows: [0, 1, 2]` makes a failed year retry with year ± 1, then ± 2. The first window that passes is used; if none does, the one with the best clear coverage is kept. The window used is stored in each file and in the log.
 
 ## Download
 
@@ -62,7 +66,7 @@ If no window passes, the window with the best clear coverage is exported and the
 | `reach_start`, `reach_end` | all | Reach range (`ds_order`) |
 | `dswe_level` | — (required) | Water = DSWE class 1..`dswe_level` |
 | `percentile` | 50 | Per-pixel percentile of per-scene water |
-| `composite_windows` | `[0, 1, 2]` | Window half-widths (years) tried in order |
+| `composite_windows` | `[0]` | Window half-widths (years) tried in order; `[0]` = single year, no widening |
 | `min_clear_fraction` | 0.5 | Clear-coverage check |
 | `min_water_fraction` | 0.5 | Water-area check (fraction of expected) |
 | `chunk_px` | 2048 | Download chunk size (pixels per side) |

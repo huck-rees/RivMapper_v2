@@ -104,9 +104,9 @@ masks:
   reach_end: {_v(m["reach_end"])}           # null = last reach
   dswe_level: {_v(m["dswe_level"])}          # required: water = DSWE class 1..dswe_level (1-4)
   percentile: {_v(m["percentile"])}          # per-pixel percentile of per-scene water (50 = median)
-  composite_windows: {_v(m["composite_windows"])}   # years +/- tried in order until the checks pass
-  min_clear_fraction: {_v(m["min_clear_fraction"])}  # share of reach polygon with >= 1 clear observation
-  min_water_fraction: {_v(m["min_water_fraction"])}  # detected / expected (width_ref x reach_len) water area
+  composite_windows: {_v(m["composite_windows"])}       # [0] = each year on its own (no widening); [0, 1, 2] widens on failed checks
+  min_clear_fraction: {_v(m["min_clear_fraction"])}  # check: share of reach polygon with >= 1 clear observation
+  min_water_fraction: {_v(m["min_water_fraction"])}  # check: detected / expected (width_ref x reach_len) water area
   chunk_px: {_v(m["chunk_px"])}           # download chunk size (pixels per side)
   min_pixels: {_v(m["min_pixels"])}          # used later by mask processing
 """

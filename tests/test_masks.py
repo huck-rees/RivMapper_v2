@@ -89,7 +89,7 @@ def mask_project(synthetic_project):
     cfg.write_text(
         cfg.read_text()
         + "masks:\n  year_start: 2002\n  year_end: 2004\n  dswe_level: 2\n"
-        "  chunk_px: 256\n  reach_end: 2\n"
+        "  chunk_px: 256\n  reach_end: 2\n  composite_windows: [0, 1, 2]\n"
     )
     p = Project.load(cfg)
     run_pipeline(p, steps=["sword", "reaches"])
@@ -171,3 +171,24 @@ def test_missing_gee_project_message(mask_project):
 
     [res] = masks.run(mask_project, [mask_project.river("Synth")])
     assert res.status == "failed" and "gee.project" in res.message
+
+
+def test_default_is_single_year(synthetic_project):
+    from rivmapper_v2 import masks
+
+    cfg = synthetic_project
+    cfg.write_text(
+        cfg.read_text()
+        + "masks:\n  year_start: 2002\n  year_end: 2002\n  dswe_level: 2\n"
+        "  reach_end: 1\n"
+    )
+    p = Project.load(cfg)
+    run_pipeline(p, steps=["sword", "reaches"])
+    fake = FakeEE()
+    [res] = masks.run(p, [p.river("Synth")], backend=fake)
+    assert fake.calls == [(2002, 0)]  # cloudy year is not widened
+    import pandas as pd
+
+    log = pd.read_csv(p.river("Synth").paths.masks_log)
+    assert log.status.tolist() == ["flagged"]
+    assert res.status == "ok"
