@@ -72,6 +72,7 @@ def make_sword(tmp: Path, continent: str = "sa", version: str = "v17b") -> Path:
                     reach_id=r["reach_id"],
                     dist_out=r["dist_out"] - k * 2000.0,
                     width=100.0,
+                    facc=r["facc"],
                     geometry=line.interpolate(k / 4, normalized=True),
                 )
             )

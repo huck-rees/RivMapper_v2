@@ -24,4 +24,20 @@ def test_beni_end_to_end(tmp_path, real_sword_dir):
     assert len(gpd.read_file(r.paths.sword_reaches)) == 73
     assert len(gpd.read_file(r.paths.sword_nodes)) == 4890
     lines = gpd.read_file(r.paths.reach_lines)
-    assert len(lines) == 45
+    # valley_widths (default): ~80 widths of valley per reach, growing downstream
+    nw = lines["valley_len"] / lines["width_ref"]
+    assert nw.iloc[:-1].between(79, 81).all()
+    assert r.paths.valley_line.exists()
+
+    # drainage_regression reproduces the v2 notebook result (45 reaches)
+    cfg.write_text(
+        cfg.read_text().replace(
+            "reaches:\n", "reaches:\n  length_method: drainage_regression\n"
+        )
+    )
+    t = run_pipeline(Project.load(cfg), steps=["reaches"])
+    assert t["status"].tolist() == ["stale"]
+    p = Project.load(cfg)
+    p.rivers = [x.model_copy(update={"overwrite": True}) for x in p.rivers]
+    run_pipeline(p, steps=["reaches"])
+    assert len(gpd.read_file(r.paths.reach_lines)) == 45

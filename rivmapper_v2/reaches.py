@@ -1,51 +1,66 @@
-"""Step 02 — re-split SWORD into drainage-area-scaled RivMapper reaches.
+"""Step 02 — divide each river into reaches and build reach polygons.
 
-SWORD's ~10 km reaches are too short for large rivers, where geomorphic
-reaches should be tens of km long. This step merges a river's extracted
-SWORD reaches into one centreline and cuts it into reaches whose length
-follows the v1 regression on drainage area::
+Default (``length_method: valley_widths``): reaches are ``widths_per_reach``
+(k = 80) channel widths long measured along a smoothed *valley line*, with
+width from a per-river power law W(A) fitted to SWORD node widths, so
+reaches hold a consistent number of meander wavelengths and lengthen
+downstream (see ``valley.py`` and docs/methods/reaches.md). The v1 rule,
+channel length = ``length_modulator × len_slope × facc + len_intercept``,
+is available as ``length_method: drainage_regression``.
 
-    reach_len_m = length_modulator * len_slope * facc_km2 + len_intercept
-
-Each reach line is buffered by ``buffer_width * reach_len``. Neighbouring
-buffers are then separated by one of two ``boundary_method`` options:
+Each reach centreline is buffered by ``buffer_width`` × its valley length
+(channel length for drainage_regression). Neighbouring buffers are
+separated by ``boundary_method``:
 
 ``nearest_centerline`` (default)
     Every point goes to the reach whose centreline is closest (a Voronoi
     partition of points sampled along the centrelines), so polygons never
-    overlap or leave wedge gaps, even where the channel loops back on itself
-    or at sharp bends.
+    overlap or leave wedge gaps, even where the channel loops back.
 ``cut_lines``
-    The original method: cut lines perpendicular to the smoothed valley
-    direction at every boundary. Can overlap where the channel doubles back.
+    Perpendicular cuts at every boundary (original method); can overlap
+    where the channel doubles back.
 
-Either way the river head and mouth are squared off with perpendicular cuts.
+The river head and mouth are squared off with perpendicular cuts.
 
 Outputs (``{data_root}/RiverMapping/Reaches/{river}/``):
-    ``{river}_reach_lines.gpkg`` and ``{river}_reach_polygons.gpkg``, both
-    with fields ``ds_order``, ``reach_len`` (m), ``ds_dist`` (m, 0 at the
-    upstream end), ``reach_ar`` (km²) and ``us_drain_ar`` (km²).
+    ``{river}_reach_lines.gpkg``, ``{river}_reach_polygons.gpkg`` (fields
+    ``ds_order``, ``reach_len``, ``ds_dist``, ``reach_ar``, ``us_drain_ar``,
+    ``valley_len``, ``valley_dist``, ``sinuosity``, ``width_ref``) and
+    ``{river}_valley_line.gpkg``.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+from dataclasses import dataclass
 from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 from shapely.geometry import LineString, MultiLineString, Point
 from shapely.ops import split, substring
 
 from .config import Project, ReachSettings, River
 from .provenance import write_run_record
 from .results import FAILED, OK, StepResult, check_existing
+from .valley import fit_width_model, reach_breaks, valley_line
 
 log = logging.getLogger(__name__)
 
 STEP = "reaches"
-FIELDS = ["ds_order", "reach_len", "ds_dist", "reach_ar", "us_drain_ar"]
+FIELDS = [
+    "ds_order",
+    "reach_len",
+    "ds_dist",
+    "reach_ar",
+    "us_drain_ar",
+    "valley_len",
+    "valley_dist",
+    "sinuosity",
+    "width_ref",
+]
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -303,17 +318,103 @@ def _total_overlap_km2(geoms: list) -> float:
 # ─────────────────────────────────────────────────────────────────────
 # Per-river processing
 # ─────────────────────────────────────────────────────────────────────
+@dataclass
+class ReachBuild:
+    """Result of ``build_reaches``."""
+
+    lines: gpd.GeoDataFrame
+    polygons: gpd.GeoDataFrame
+    diagnostics: dict
+    valley: gpd.GeoDataFrame | None = None  # valley line (valley_widths only)
+
+
+def _order_nodes(nodes: gpd.GeoDataFrame, crs) -> gpd.GeoDataFrame:
+    col = "node_order" if "node_order" in nodes.columns else None
+    if col is None:
+        nodes = nodes.sort_values(["reach_order", "dist_out"], ascending=[True, False])
+    else:
+        nodes = nodes.sort_values(col)
+    return nodes.to_crs(crs).reset_index(drop=True)
+
+
+def _valley_splits(line, sword_utm, nodes_utm, settings, diag):
+    """Split distances along ``line`` from valley-length reach breaks."""
+    import shapely
+
+    x = nodes_utm.geometry.x.to_numpy()
+    y = nodes_utm.geometry.y.to_numpy()
+    width = nodes_utm["width"].to_numpy(dtype=float)
+    area = nodes_utm["facc"].to_numpy(dtype=float).copy()
+    area[~(area > 0)] = np.nan
+    area = pd.Series(area).interpolate(limit_direction="both").to_numpy()
+
+    model = fit_width_model(width, area)
+    vl = valley_line(
+        x, y, width, settings.valley_sigma_widths, settings.valley_sinuosity_factor
+    )
+    w_ref = model(area)
+    starts = reach_breaks(
+        vl.valley_dist, w_ref, settings.widths_per_reach, settings.final_merge_fraction
+    )
+
+    # Position of every node along the merged channel line, forced monotonic,
+    # then valley-distance breaks interpolated to channel distance.
+    s_line = shapely.line_locate_point(line, shapely.points(x, y))
+    s_line = np.maximum.accumulate(s_line)
+    s_line[0] = 0.0
+    v = vl.valley_dist
+    breaks = [float(np.interp(d, v, s_line)) for d in starts[1:]]
+    ok = [0.0 < b < line.length for b in breaks]
+    starts = [0.0] + [d for d, k in zip(starts[1:], ok) if k]
+    breaks = [b for b, k in zip(breaks, ok) if k]
+
+    ends = [*starts[1:], float(v[-1])]
+    per_reach = {
+        "valley_len": [e - d for d, e in zip(starts, ends)],
+        "valley_dist": list(starts),
+        "width_ref": [float(np.interp(d, v, w_ref)) for d in starts],
+        "us_drain_ar": [float(np.interp(d, v, area)) for d in starts],
+    }
+    valley_gdf = gpd.GeoDataFrame(
+        {"valley_len": [float(v[-1])]},
+        geometry=[LineString(np.column_stack([vl.x, vl.y]))],
+        crs=nodes_utm.crs,
+    )
+    diag.update(
+        {
+            "length_method": "valley_widths",
+            "widths_per_reach": settings.widths_per_reach,
+            "width_model": {
+                "form": "W = coef * A^exponent (W m, A km2)",
+                "coef": round(model.coef, 4),
+                "exponent": round(model.exponent, 4),
+                "method": model.method,
+                "n_nodes": model.n_nodes,
+            },
+            "valley_length_km": round(float(v[-1]) / 1000, 3),
+            "channel_length_km_nodes": round(float(vl.channel_dist[-1]) / 1000, 3),
+            "overall_sinuosity": round(float(vl.channel_dist[-1] / max(v[-1], 1)), 3),
+        }
+    )
+    return breaks, per_reach, vl, valley_gdf
+
+
 def build_reaches(
-    sword: gpd.GeoDataFrame, settings: ReachSettings
-) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, dict]:
+    sword: gpd.GeoDataFrame,
+    settings: ReachSettings,
+    nodes: gpd.GeoDataFrame | None = None,
+) -> ReachBuild:
     """Build reach lines and polygons from one river's SWORD reaches.
 
     Args:
         sword: Extracted SWORD reaches with ``reach_order`` and ``facc``.
         settings: Resolved reach settings (``buffer_width`` must be set).
+        nodes: Extracted SWORD nodes (``width``, ``facc``, ``node_order``);
+            required for ``length_method: valley_widths``.
 
     Returns:
-        (lines, polygons, diagnostics), both GeoDataFrames in local UTM.
+        ``ReachBuild`` with lines and polygons in local UTM, diagnostics and,
+        for valley_widths, the valley line.
     """
     sword = sword.sort_values("reach_order").reset_index(drop=True)
     utm = utm_crs_for(sword)
@@ -324,17 +425,37 @@ def build_reaches(
     facc = sword["facc"].to_numpy(dtype=float)
 
     line = merge_to_line(sword, settings.gap_tolerance_m)
-    starts = compute_split_distances(cum_end, facc, settings)
-    pieces = split_at_distances(line, starts[1:])
+    diag: dict = {}
+    valley_gdf = None
+    vl = None
+    if settings.length_method == "valley_widths":
+        if nodes is None or nodes.empty:
+            raise RuntimeError(
+                "length_method valley_widths needs the SWORD nodes file "
+                "(re-run the sword step)"
+            )
+        nodes_utm = _order_nodes(nodes, utm)
+        breaks, per_reach, vl, valley_gdf = _valley_splits(
+            line, sword, nodes_utm, settings, diag
+        )
+        pieces = split_at_distances(line, breaks)
+    else:
+        starts = compute_split_distances(cum_end, facc, settings)
+        pieces = split_at_distances(line, starts[1:])
+        per_reach = None
+        diag["length_method"] = "drainage_regression"
 
     lines = gpd.GeoDataFrame(geometry=pieces, crs=utm)
     lines["reach_len"] = lines.geometry.length
+    if per_reach is not None:
+        for k, vals in per_reach.items():
+            lines[k] = vals
     lines = lines[lines["reach_len"] > 0.0].reset_index(drop=True)
     if lines.empty:
         raise RuntimeError("no non-empty reaches after splitting")
 
     trimmed_m = 0.0
-    if len(lines) >= 2:
+    if per_reach is None and len(lines) >= 2:
         last, prev = lines["reach_len"].iloc[-1], lines["reach_len"].iloc[-2]
         if last < settings.ds_trim_fraction * prev:
             trimmed_m = float(last)
@@ -342,12 +463,19 @@ def build_reaches(
 
     lines["ds_order"] = np.arange(1, len(lines) + 1)
     lines["ds_dist"] = lines["reach_len"].cumsum().shift(1, fill_value=0.0)
-    lines["us_drain_ar"] = [sample_facc(d, cum_end, facc) for d in lines["ds_dist"]]
+    if per_reach is None:
+        lines["us_drain_ar"] = [sample_facc(d, cum_end, facc) for d in lines["ds_dist"]]
+        for k in ("valley_len", "valley_dist", "width_ref"):
+            lines[k] = np.nan
+    lines["sinuosity"] = lines["reach_len"] / lines["valley_len"]
 
-    # Cut lines are built on the merged line *up to the last kept reach*,
-    # so a trimmed tail does not shift the mouth cut.
+    # Buffer radius: fraction of valley length (valley_widths) or of channel
+    # length (drainage_regression).
+    basis = lines["valley_len"] if per_reach is not None else lines["reach_len"]
+    radii = (basis * settings.buffer_width).to_numpy()
+
     kept = substring(line, 0.0, float(lines["reach_len"].sum())) if trimmed_m else line
-    max_buffer = float((lines["reach_len"] * settings.buffer_width).max())
+    max_buffer = float(radii.max())
     cuts = compute_cut_lines(
         kept,
         lines["reach_len"].tolist(),
@@ -355,9 +483,13 @@ def build_reaches(
         settings,
         max_buffer,
     )
+    if vl is not None:
+        # Square off head and mouth perpendicular to the valley line.
+        cuts[0] = _valley_end_cut(vl, lines, head=True, half_length=3 * max_buffer)
+        cuts[-1] = _valley_end_cut(vl, lines, head=False, half_length=3 * max_buffer)
 
     reach_geoms = list(lines.geometry)
-    buffers = [g.buffer(g.length * settings.buffer_width) for g in reach_geoms]
+    buffers = [g.buffer(r) for g, r in zip(reach_geoms, radii)]
     mids = [g.interpolate(g.length / 2.0) for g in reach_geoms]
     n = len(reach_geoms)
     polys, unclipped, multipart = [], [], []
@@ -420,6 +552,7 @@ def build_reaches(
         )
 
     diagnostics = {
+        **diag,
         "n_reaches": int(len(lines)),
         "river_length_km": round(float(cum_end[-1]) / 1000, 3),
         "trimmed_tail_km": round(trimmed_m / 1000, 3),
@@ -429,7 +562,42 @@ def build_reaches(
         "overlap_km2": round(overlap_km2, 4),
         "utm_crs": utm,
     }
-    return lines[FIELDS + ["geometry"]], polygons[FIELDS + ["geometry"]], diagnostics
+    if per_reach is not None:
+        nw = (lines["valley_len"] / lines["width_ref"]).to_numpy()
+        diagnostics["valley_len_km_range"] = [
+            round(float(lines["valley_len"].min()) / 1000, 2),
+            round(float(lines["valley_len"].max()) / 1000, 2),
+        ]
+        diagnostics["widths_per_reach_range"] = [
+            round(float(nw.min()), 1),
+            round(float(nw.max()), 1),
+        ]
+    return ReachBuild(
+        lines[FIELDS + ["geometry"]],
+        polygons[FIELDS + ["geometry"]],
+        diagnostics,
+        valley_gdf,
+    )
+
+
+def _valley_end_cut(vl, lines, head: bool, half_length: float) -> LineString:
+    """Cut line at the river head or mouth, perpendicular to the valley line."""
+    v = vl.valley_dist
+    span = float(lines["valley_len"].iloc[0 if head else -1]) * 0.5
+    if head:
+        i0, i1 = 0, int(np.searchsorted(v, v[0] + span))
+        anchor = 0
+    else:
+        i0, i1 = int(np.searchsorted(v, v[-1] - span)), len(v) - 1
+        anchor = len(v) - 1
+    i1 = max(i1, i0 + 1)
+    i1 = min(i1, len(v) - 1)
+    t = np.array([vl.x[i1] - vl.x[i0], vl.y[i1] - vl.y[i0]])
+    t = t / max(np.hypot(*t), 1e-9)
+    end = lines.geometry.iloc[0 if head else -1]
+    pt = Point(end.coords[0] if head else end.coords[-1])
+    del anchor
+    return make_cut_line(pt, t, half_length)
 
 
 def _parameters(river: River) -> dict:
@@ -471,19 +639,34 @@ def create_reaches(
             f"{p.sword_reaches.name} is empty or lacks `reach_order`",
         )
 
-    lines, polygons, diag = build_reaches(sword, river.reaches)
+    nodes = None
+    if river.reaches.length_method == "valley_widths":
+        if not p.sword_nodes.exists():
+            return StepResult(
+                river.name,
+                STEP,
+                FAILED,
+                f"SWORD nodes not found at {p.sword_nodes} — run the sword step",
+            )
+        nodes = gpd.read_file(p.sword_nodes, engine="pyogrio")
+    built = build_reaches(sword, river.reaches, nodes)
+    lines, polygons, diag = built.lines, built.polygons, built.diagnostics
 
     p.reaches_dir.mkdir(parents=True, exist_ok=True)
     lines.to_file(p.reach_lines, driver="GPKG", engine="pyogrio")
     polygons.to_file(p.reach_polygons, driver="GPKG", engine="pyogrio")
+    outputs = {"reach_lines": p.reach_lines, "reach_polygons": p.reach_polygons}
+    if built.valley is not None:
+        built.valley.to_file(p.valley_line, driver="GPKG", engine="pyogrio")
+        outputs["valley_line"] = p.valley_line
     write_run_record(
         p.run_record(STEP),
         step=STEP,
         river=river.name,
         config_path=config_path,
         parameters=params,
-        inputs={"sword_reaches": p.sword_reaches},
-        outputs={"reach_lines": p.reach_lines, "reach_polygons": p.reach_polygons},
+        inputs={"sword_reaches": p.sword_reaches, "sword_nodes": p.sword_nodes},
+        outputs=outputs,
         summary=diag,
     )
     return StepResult(river.name, STEP, OK, f"{diag['n_reaches']} reaches", diag)

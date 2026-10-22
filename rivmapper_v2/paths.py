@@ -15,6 +15,7 @@ v2 notebooks, so existing outputs are picked up as-is::
         └── Reaches/{river}/                     step: reaches
             ├── {river}_reach_lines.gpkg
             ├── {river}_reach_polygons.gpkg
+            ├── {river}_valley_line.gpkg
             └── {river}_reaches_run.yaml
 """
 
@@ -74,6 +75,10 @@ class RiverPaths:
     @property
     def reach_polygons(self) -> Path:
         return self.reaches_dir / f"{self.river}_reach_polygons.gpkg"
+
+    @property
+    def valley_line(self) -> Path:
+        return self.reaches_dir / f"{self.river}_valley_line.gpkg"
 
     # ── provenance ──────────────────────────────────────────────────
     def run_record(self, step: str) -> Path:

@@ -99,6 +99,30 @@ class GeeSettings(_Section):
 class ReachSettings(_Section):
     """Parameters for step 02 (create reaches). All can be set per river."""
 
+    length_method: Literal["valley_widths", "drainage_regression"] = Field(
+        "valley_widths",
+        description="valley_widths: reach valley length = widths_per_reach × W(A); "
+        "drainage_regression: v1 channel-length regression on drainage area.",
+    )
+    widths_per_reach: float = Field(
+        80.0, gt=0, description="k: reach valley length in channel widths."
+    )
+    valley_sigma_widths: float = Field(
+        15.0, gt=0, description="Base valley-line smoothing scale (channel widths)."
+    )
+    valley_sinuosity_factor: float = Field(
+        6.0,
+        ge=0,
+        description="Smoothing scale in sinuous reaches = this × local sinuosity "
+        "(widths), if larger than valley_sigma_widths.",
+    )
+    final_merge_fraction: float = Field(
+        0.5,
+        ge=0,
+        le=1,
+        description="valley_widths: merge a last reach shorter than this × its "
+        "nominal length into the one above.",
+    )
     length_modulator: float = Field(1.0, gt=0)
     buffer_width: float | None = Field(
         None, gt=0, description="Buffer half-width as a fraction of reach length."

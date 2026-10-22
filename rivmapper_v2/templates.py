@@ -61,17 +61,27 @@ sword:
 gee:
   project: {_v(gee_project)}
 
-# Step 02: reach creation. reach_len_m = length_modulator * len_slope * facc + len_intercept
+# Step 02: reach creation (see docs/methods/reaches.md).
 reaches:
+  # valley_widths: reaches have valley length = widths_per_reach x W(A), measured
+  #   along a smoothed valley line; W(A) is a width-vs-drainage-area power law
+  #   fitted to SWORD widths. drainage_regression: v1 rule on channel length.
+  length_method: {_v(r["length_method"])}
+  widths_per_reach: {_v(r["widths_per_reach"])}       # k: ~80 W = ~7 meander wavelengths, ~15 bends
+  buffer_width: {_v(r["buffer_width"])}        # buffer half-width as a fraction of reach (valley) length (required)
+  valley_sigma_widths: {_v(r["valley_sigma_widths"])}    # valley-line smoothing scale (channel widths)
+  valley_sinuosity_factor: {_v(r["valley_sinuosity_factor"])} # smoothing in sinuous reaches = this x local sinuosity (widths)
+  final_merge_fraction: {_v(r["final_merge_fraction"])}   # merge a last reach shorter than this x nominal
+  # drainage_regression only: reach_len_m = length_modulator * len_slope * facc + len_intercept
   length_modulator: {_v(r["length_modulator"])}
-  buffer_width: {_v(r["buffer_width"])}        # buffer half-width as a fraction of reach length (required)
   len_slope: {_v(r["len_slope"])}            # v1 regression (Ganges, HydroRIVERS UPLAND_SKM)
   len_intercept: {_v(r["len_intercept"])}
-  ds_trim_fraction: {_v(r["ds_trim_fraction"])}       # drop a last reach shorter than this × the one above it
+  ds_trim_fraction: {_v(r["ds_trim_fraction"])}       # drop a last reach shorter than this x the one above it
+  # Geometry details
   gap_tolerance_m: {_v(r["gap_tolerance_m"])}       # warn on gaps between SWORD reaches larger than this
-  smoothing_window_multiplier: {_v(r["smoothing_window_multiplier"])}  # valley-direction window = this × reach length
+  smoothing_window_multiplier: {_v(r["smoothing_window_multiplier"])}  # cut-line direction window = this x reach length
   n_tangent_samples: {_v(r["n_tangent_samples"])}
-  cut_extent_factor: {_v(r["cut_extent_factor"])}      # cut-line half-length = this × largest buffer
+  cut_extent_factor: {_v(r["cut_extent_factor"])}      # cut-line half-length = this x largest buffer
   # How neighbouring polygons are separated: nearest_centerline (each point goes
   # to the closest reach centreline; never overlaps) or cut_lines (perpendicular
   # cuts at each boundary; can overlap where the channel loops back).

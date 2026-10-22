@@ -116,7 +116,7 @@ If the old working directory already holds a `SWORD/` folder, the new config kee
 | Step | Module | Output (under `data_root`) |
 |---|---|---|
 | `sword` | `rivmapper_v2/sword.py` | `SWORD/Extracted_Rivers/{river}/`: traced SWORD reaches and nodes |
-| `reaches` | `rivmapper_v2/reaches.py` | `RiverMapping/Reaches/{river}/`: reach lines and polygons. Neighbouring polygons are split by nearest centreline (`boundary_method`), so they never overlap |
+| `reaches` | `rivmapper_v2/reaches.py`, `valley.py` | `RiverMapping/Reaches/{river}/`: reach lines, polygons and valley line. Reaches are 80 channel widths of valley length, and polygons never overlap. Method and citations: [docs/methods/reaches.md](docs/methods/reaches.md) |
 | masks | `notebooks/03_create_masks.ipynb` | Not yet ported; still reads the old master CSV |
 
 ## Repository structure
