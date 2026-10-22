@@ -30,7 +30,7 @@ import math
 import re
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 import yaml
@@ -110,6 +110,17 @@ class ReachSettings(_Section):
     smoothing_window_multiplier: float = Field(1.5, gt=0)
     n_tangent_samples: int = Field(21, ge=3)
     cut_extent_factor: float = Field(3.0, gt=0)
+    boundary_method: Literal["nearest_centerline", "cut_lines"] = Field(
+        "nearest_centerline",
+        description="How neighbouring reach polygons are separated: "
+        "nearest_centerline (each point goes to the closest reach centreline; "
+        "never overlaps) or cut_lines (perpendicular cuts at each boundary).",
+    )
+    partition_spacing_m: float = Field(
+        100.0,
+        gt=0,
+        description="Sample spacing along centrelines for nearest_centerline (m).",
+    )
 
 
 class MaskSettings(_Section):

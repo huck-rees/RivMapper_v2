@@ -72,6 +72,11 @@ reaches:
   smoothing_window_multiplier: {_v(r["smoothing_window_multiplier"])}  # valley-direction window = this × reach length
   n_tangent_samples: {_v(r["n_tangent_samples"])}
   cut_extent_factor: {_v(r["cut_extent_factor"])}      # cut-line half-length = this × largest buffer
+  # How neighbouring polygons are separated: nearest_centerline (each point goes
+  # to the closest reach centreline; never overlaps) or cut_lines (perpendicular
+  # cuts at each boundary; can overlap where the channel loops back).
+  boundary_method: {_v(r["boundary_method"])}
+  partition_spacing_m: {_v(r["partition_spacing_m"])}   # centreline sample spacing for nearest_centerline
 
 # Step 03: water masks (not yet ported to the package; validated now so the
 # rivers table can already carry these columns).

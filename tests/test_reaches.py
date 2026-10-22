@@ -74,3 +74,45 @@ def test_missing_buffer_width_is_clear(synthetic_project):
 def test_unknown_step(synthetic_project):
     with pytest.raises(KeyError, match="masks"):
         run_pipeline(Project.load(synthetic_project), steps=["masks"])
+
+
+def _hairpin_sword():
+    """SWORD-like reaches for a channel that runs east, then loops back west."""
+    import geopandas as gpd
+
+    coords = [(x, 0.0) for x in range(0, 40_001, 1000)]
+    coords += [
+        (40_000 + 3000 * np.sin(t), 3000 - 3000 * np.cos(t))
+        for t in np.linspace(0.1, np.pi, 20)
+    ]
+    coords += [(x, 6000.0) for x in range(40_000, -1, -1000)]
+    line = LineString(coords)
+    pieces = split_at_distances(line, list(np.arange(10_000, line.length, 10_000)))
+    gdf = gpd.GeoDataFrame(
+        {"reach_order": range(1, len(pieces) + 1), "facc": 100.0},
+        geometry=pieces,
+        crs="EPSG:32633",
+    )
+    return gdf
+
+
+@pytest.mark.parametrize("method", ["cut_lines", "nearest_centerline"])
+def test_boundary_methods_on_hairpin(method):
+    from rivmapper_v2.reaches import build_reaches
+
+    s = ReachSettings(
+        buffer_width=0.5,
+        len_slope=1.0,
+        len_intercept=0.0,
+        length_modulator=100.0,
+        boundary_method=method,
+    )
+    lines, polys, diag = build_reaches(_hairpin_sword(), s)
+    assert diag["boundary_method"] == method
+    if method == "nearest_centerline":
+        assert diag["overlap_km2"] < 1e-6
+        # every reach polygon contains (most of) its own centreline
+        for line, poly in zip(lines.geometry, polys.geometry):
+            assert line.intersection(poly).length > 0.95 * line.length
+    else:
+        assert diag["overlap_km2"] > 1  # buffers spill across the hairpin

@@ -7,10 +7,19 @@ follows the v1 regression on drainage area::
 
     reach_len_m = length_modulator * len_slope * facc_km2 + len_intercept
 
-Each reach line is buffered by ``buffer_width * reach_len`` and the
-buffers are trimmed by cut lines drawn perpendicular to the smoothed
-*valley* direction at every reach boundary (including the river head and
-mouth), so adjacent polygons do not overlap on sinuous rivers.
+Each reach line is buffered by ``buffer_width * reach_len``. Neighbouring
+buffers are then separated by one of two ``boundary_method`` options:
+
+``nearest_centerline`` (default)
+    Every point goes to the reach whose centreline is closest (a Voronoi
+    partition of points sampled along the centrelines), so polygons never
+    overlap or leave wedge gaps, even where the channel loops back on itself
+    or at sharp bends.
+``cut_lines``
+    The original method: cut lines perpendicular to the smoothed valley
+    direction at every boundary. Can overlap where the channel doubles back.
+
+Either way the river head and mouth are squared off with perpendicular cuts.
 
 Outputs (``{data_root}/RiverMapping/Reaches/{river}/``):
     ``{river}_reach_lines.gpkg`` and ``{river}_reach_polygons.gpkg``, both
@@ -233,6 +242,64 @@ def compute_cut_lines(
     return cuts
 
 
+def nearest_centerline_cells(
+    lines: list[LineString], extent, spacing_m: float = 100.0
+) -> list:
+    """Partition ``extent`` so each part is nearest to one reach line.
+
+    Points are sampled every ``spacing_m`` along each reach centreline and
+    a Voronoi diagram of all points is dissolved by reach. Cell ``i`` is the
+    area closer to reach ``i``'s centreline than to any other reach's (to
+    within the sampling spacing), so cells never overlap and their
+    boundaries follow the mid-line between neighbouring channels, including
+    where a channel loops back on itself.
+    """
+    import shapely
+
+    pts, labels = [], []
+    n = len(lines)
+    for i, ln in enumerate(lines):
+        k = max(2, int(np.ceil(ln.length / spacing_m)) + 1)
+        # Shared junction points belong to the upstream reach only.
+        ds = np.linspace(0.0, ln.length, k, endpoint=(i == n - 1))
+        pts.extend(shapely.line_interpolate_point(ln, ds))
+        labels.extend([i] * len(ds))
+    pts = np.asarray(pts, dtype=object)
+    labels = np.asarray(labels)
+
+    cells = shapely.get_parts(
+        shapely.voronoi_polygons(shapely.multipoints(pts), extend_to=extent)
+    )
+    point_idx, cell_idx = shapely.STRtree(cells).query(pts, predicate="within")
+    owner = np.full(len(cells), -1)
+    owner[cell_idx] = labels[point_idx]
+
+    out = []
+    for i in range(n):
+        mine = cells[owner == i]
+        try:
+            merged = shapely.coverage_union_all(mine)
+        except Exception:  # noqa: BLE001 — fall back if cells are not a clean coverage
+            merged = shapely.union_all(mine)
+        out.append(merged)
+    return out
+
+
+def _total_overlap_km2(geoms: list) -> float:
+    """Sum of pairwise intersection areas between all polygons."""
+    import shapely
+
+    tree = shapely.STRtree(geoms)
+    a, b = tree.query(geoms, predicate="intersects")
+    keep = a < b
+    return (
+        float(
+            sum(geoms[i].intersection(geoms[j]).area for i, j in zip(a[keep], b[keep]))
+        )
+        / 1e6
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Per-river processing
 # ─────────────────────────────────────────────────────────────────────
@@ -289,15 +356,41 @@ def build_reaches(
         max_buffer,
     )
 
-    polys, unclipped = [], []
-    for i, geom in enumerate(lines.geometry):
-        poly = geom.buffer(geom.length * settings.buffer_width)
-        mid = geom.interpolate(geom.length / 2.0)
-        poly, ok_us = clip_by_cut(poly, cuts[i], mid)
-        poly, ok_ds = clip_by_cut(poly, cuts[i + 1], mid)
-        if not (ok_us and ok_ds):
-            unclipped.append(i + 1)
-        polys.append(poly)
+    reach_geoms = list(lines.geometry)
+    buffers = [g.buffer(g.length * settings.buffer_width) for g in reach_geoms]
+    mids = [g.interpolate(g.length / 2.0) for g in reach_geoms]
+    n = len(reach_geoms)
+    polys, unclipped, multipart = [], [], []
+
+    if settings.boundary_method == "nearest_centerline":
+        # Neighbours are separated by the nearest-centreline partition; cut
+        # lines are only used to square off the river head and mouth.
+        from shapely.geometry import box
+
+        extent = box(*gpd.GeoSeries(buffers).total_bounds).buffer(1.0)
+        cells = nearest_centerline_cells(
+            reach_geoms, extent, settings.partition_spacing_m
+        )
+        for i in range(n):
+            poly = buffers[i].intersection(cells[i])
+            if i == 0:
+                poly, ok = clip_by_cut(poly, cuts[0], mids[0])
+                if not ok:
+                    unclipped.append(i + 1)
+            if i == n - 1:
+                poly, ok = clip_by_cut(poly, cuts[-1], mids[-1])
+                if not ok and (i + 1) not in unclipped:
+                    unclipped.append(i + 1)
+            if poly.geom_type == "MultiPolygon":
+                multipart.append(i + 1)
+            polys.append(poly)
+    else:  # "cut_lines": perpendicular cuts at every boundary (original method)
+        for i in range(n):
+            poly, ok_us = clip_by_cut(buffers[i], cuts[i], mids[i])
+            poly, ok_ds = clip_by_cut(poly, cuts[i + 1], mids[i])
+            if not (ok_us and ok_ds):
+                unclipped.append(i + 1)
+            polys.append(poly)
 
     polygons = lines.copy()
     polygons["geometry"] = polys
@@ -312,32 +405,31 @@ def build_reaches(
             "cut_extent_factor",
             unclipped,
         )
-    overlap_km2 = _adjacent_overlap_km2(polygons)
+    overlap_km2 = _total_overlap_km2(list(polygons.geometry))
     if overlap_km2 > 0.01:
         log.warning(
-            "  adjacent reach polygons overlap by %.2f km² in total — likely "
-            "crossing cut lines on a sharp bend; try a larger "
-            "smoothing_window_multiplier",
+            "  reach polygons overlap by %.2f km² in total — likely crossing "
+            "cut lines on a sharp bend; use boundary_method: nearest_centerline",
             overlap_km2,
+        )
+    if multipart:
+        log.info(
+            "  reach(es) %s have detached pieces (floodplain nearest to their "
+            "centreline but cut off by a neighbour's loop)",
+            multipart,
         )
 
     diagnostics = {
         "n_reaches": int(len(lines)),
         "river_length_km": round(float(cum_end[-1]) / 1000, 3),
         "trimmed_tail_km": round(trimmed_m / 1000, 3),
+        "boundary_method": settings.boundary_method,
         "unclipped_reaches": unclipped,
-        "adjacent_overlap_km2": round(overlap_km2, 4),
+        "multipart_reaches": multipart,
+        "overlap_km2": round(overlap_km2, 4),
         "utm_crs": utm,
     }
     return lines[FIELDS + ["geometry"]], polygons[FIELDS + ["geometry"]], diagnostics
-
-
-def _adjacent_overlap_km2(polygons: gpd.GeoDataFrame) -> float:
-    geoms = list(polygons.geometry)
-    return (
-        sum(geoms[i].intersection(geoms[i + 1]).area for i in range(len(geoms) - 1))
-        / 1e6
-    )
 
 
 def _parameters(river: River) -> dict:
