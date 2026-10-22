@@ -114,6 +114,11 @@ rivmapper migrate E:/Dissertation/Data/Template_RivMapper_master.csv --out E:/Di
 
 If the old working directory already holds a `SWORD/` folder, the new config keeps using it via `sword: dir:`. Migration also turns columns that are the same for every river into YAML defaults, keeps columns that vary as per-river overrides, renames old columns (`reach_length_modulator` → `length_modulator`, `DSWE_threshold_level` → `dswe_level`, `working_directory` → `data_root`, …), and drops pipeline-derived columns.
 
+## Methods
+
+- [CRS and data conventions](docs/methods/conventions.md): projections, raster grid, mask values, units
+- [Reach definition](docs/methods/reaches.md): valley line, reach length, reach polygons
+
 ## Pipeline steps
 
 | Step | Module | Output (under `data_root`) |
