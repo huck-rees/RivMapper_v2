@@ -89,7 +89,7 @@ def write_project(tmp: Path, rivers_csv: str, yaml_extra: str = "") -> Path:
     cfg = tmp / "rivmapper.yaml"
     cfg.write_text(
         "data_root: ./data\nrivers_table: rivers.csv\n"
-        "sword:\n  dir: ./SWORD\n  md5: null\n"
+        "sword:\n  dir: ./SWORD\n"
         "reaches:\n  buffer_width: 0.5\n" + yaml_extra,
         encoding="utf-8",
     )

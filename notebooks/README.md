@@ -2,7 +2,7 @@
 
 Each notebook runs one pipeline step from the `rivmapper_v2` package and adds
 QC plots. Settings come from your project's `rivmapper.yaml` and rivers
-table. Set `CONFIG_PATH` in the first code cell.
+table. Set `CONFIG_PATH` in the first code cell (e.g. `projects/oktedi/rivmapper.yaml`).
 
 | Notebook | Step | Status |
 |---|---|---|

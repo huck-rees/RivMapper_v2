@@ -23,6 +23,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+# Pipeline steps in run order (kept here, dependency-free, so the CLI can
+# list them without importing the heavy step modules).
+STEP_NAMES = ("sword", "reaches")
+
 
 def sword_continent_files(
     sword_dir: Path, continent: str, version: str

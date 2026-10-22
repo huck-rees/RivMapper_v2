@@ -6,7 +6,10 @@ from .conftest import CHAIN
 def test_init_then_validate(tmp_path, capsys):
     assert main(["init", str(tmp_path)]) == 0
     assert main(["validate", str(tmp_path / "rivmapper.yaml")]) == 0
-    assert "buffer_width is unset" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "buffer_width is unset" in out
+    assert "Beni" in out and "62266500601" in out  # per-river table printed
+    assert "data_root: ./output" in (tmp_path / "rivmapper.yaml").read_text()
 
 
 def test_validate_reports_errors(tmp_path, capsys):

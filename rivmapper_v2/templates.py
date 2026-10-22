@@ -15,7 +15,7 @@ def _v(value: Any) -> str:
 
 
 def render_config(
-    data_root: str = "./data",
+    data_root: str = "./output",
     rivers_table: str = "rivers.csv",
     gee_project: str | None = None,
     sword_dir: str | None = None,
@@ -37,7 +37,8 @@ def render_config(
 # Check it:  rivmapper validate rivmapper.yaml
 # Run it:    rivmapper run rivmapper.yaml [--steps sword,reaches] [--rivers Beni]
 
-# Outputs go under this folder (SWORD/, RiverMapping/, ...).
+# This project's outputs go under this folder (extracted SWORD reaches,
+# RiverMapping/, run records, ...).
 data_root: {_v(data_root)}
 
 # One row per river: river_name, sword_cont_abb, us_sword_reach_id,
@@ -49,8 +50,10 @@ overwrite: false
 
 sword:
   version: {_v(s.version)}
-  # Folder with the continental SWORD geopackages. null = {{data_root}}/SWORD.
-  # Downloaded from Zenodo (~2 GB, all continents) on first use.
+  # Folder with the continental SWORD geopackages, shared by all projects.
+  # null = the shared datasets folder (<repo>/data/SWORD in a git checkout;
+  # `rivmapper data path` shows it). Downloaded (~2 GB) on first use, or
+  # up front with `rivmapper data fetch sword`.
   dir: {_v(sword_dir)}
   # SWORD `type` codes the tracer may walk through (1 = river).
   river_types: [1]

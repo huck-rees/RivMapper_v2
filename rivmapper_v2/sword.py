@@ -11,9 +11,7 @@ filter on the traced reach IDs rather than loading the whole continent.
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import zipfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -31,84 +29,25 @@ STEP = "sword"
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Download
+# Data
 # ─────────────────────────────────────────────────────────────────────
-def ensure_sword_downloaded(
+def ensure_sword(
     sword_dir: Path, continent: str, settings: SwordSettings
 ) -> tuple[Path, Path]:
-    """Return (reaches_gpkg, nodes_gpkg) for ``continent``, downloading if needed.
+    """Return (reaches_gpkg, nodes_gpkg) for ``continent``, fetching SWORD if needed.
 
-    The Zenodo deposit is a single zip holding every continent, so a
-    download extracts all continental geopackages at once. The zip is
-    downloaded to a ``.part`` file and only renamed once complete, so an
-    interrupted download is never mistaken for a finished one.
-
-    Raises:
-        RuntimeError: If the MD5 checksum does not match ``settings.md5``.
+    If this continent's two geopackages are already present they are used
+    as-is (even if other continents are missing). Otherwise the full SWORD
+    archive for ``settings.version`` is fetched via the dataset registry
+    (``rivmapper data fetch sword``), which checks its checksum.
     """
     reaches_path, nodes_path = sword_continent_files(
         sword_dir, continent, settings.version
     )
-    if reaches_path.exists() and nodes_path.exists():
-        return reaches_path, nodes_path
-
-    import requests
-    from tqdm.auto import tqdm
-
-    sword_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = sword_dir / Path(settings.download_url).name
-    part_path = zip_path.with_suffix(zip_path.suffix + ".part")
-    log.info(
-        "SWORD %s geopackages for '%s' not found in %s; downloading %s",
-        settings.version,
-        continent,
-        sword_dir,
-        settings.download_url,
-    )
-
-    with requests.get(settings.download_url, stream=True, timeout=60) as resp:
-        resp.raise_for_status()
-        total = int(resp.headers.get("Content-Length", 0))
-        md5 = hashlib.md5()
-        with (
-            open(part_path, "wb") as f,
-            tqdm(
-                total=total,
-                unit="B",
-                unit_scale=True,
-                unit_divisor=1024,
-                desc="Downloading SWORD",
-            ) as bar,
-        ):
-            for chunk in resp.iter_content(chunk_size=1 << 20):
-                f.write(chunk)
-                md5.update(chunk)
-                bar.update(len(chunk))
-
-    if settings.md5 and md5.hexdigest() != settings.md5:
-        raise RuntimeError(
-            f"SWORD download checksum mismatch (expected {settings.md5}, got "
-            f"{md5.hexdigest()}). The partial file was kept at {part_path}. "
-            f"If Zenodo has republished the archive, update `sword: md5:` "
-            f"(or set it to null) in rivmapper.yaml."
-        )
-    part_path.replace(zip_path)
-
-    log.info("Extracting SWORD geopackages to %s", sword_dir)
-    with zipfile.ZipFile(zip_path) as zf:
-        for member in zf.namelist():
-            name = Path(member).name
-            if name.endswith(".gpkg") and not name.startswith("._"):
-                with zf.open(member) as src, open(sword_dir / name, "wb") as dst:
-                    while block := src.read(1 << 20):
-                        dst.write(block)
-    zip_path.unlink()
-
     if not (reaches_path.exists() and nodes_path.exists()):
-        raise RuntimeError(
-            f"Download finished but {reaches_path.name} / {nodes_path.name} "
-            f"were not in the archive. Check `sword: version:`."
-        )
+        from .data import fetch
+
+        fetch("sword", settings.version, folder=sword_dir)
     return reaches_path, nodes_path
 
 
@@ -322,9 +261,7 @@ def run(project: Project, rivers: list[River]) -> list[StepResult]:
             continue
 
         try:
-            reaches_path, nodes_path = ensure_sword_downloaded(
-                sword_dir, continent, settings
-            )
+            reaches_path, nodes_path = ensure_sword(sword_dir, continent, settings)
             log.info("Loading %s", reaches_path.name)
             reaches = load_continent_reaches(reaches_path, settings.river_types)
         except Exception as e:  # noqa: BLE001 — report per river, keep going

@@ -114,10 +114,17 @@ def migrate_master_csv(
         keep.append("notes")
         dropped.remove("notes")
 
+    # Old layout kept SWORD in {working_directory}/SWORD; keep using it.
+    sword_dir = None
+    old_sword = Path(data_root) / "SWORD"
+    if old_sword.is_dir() and any(old_sword.glob("*_sword_reaches_*.gpkg")):
+        sword_dir = old_sword.as_posix()
+
     out_dir.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
         render_config(
             data_root=data_root,
+            sword_dir=sword_dir,
             rivers_table=rivers_path.name,
             reaches=sections["reaches"],
             masks=sections["masks"],

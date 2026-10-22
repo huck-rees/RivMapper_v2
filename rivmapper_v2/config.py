@@ -17,9 +17,9 @@ returns one fully resolved ``River`` per row, so pipeline steps never
 look anything up in the raw files.
 
 Example:
-    >>> project = Project.load("E:/Dissertation/Data/rivmapper.yaml")
-    >>> beni = project.river("Beni")
-    >>> beni.reaches.buffer_width
+    >>> project = Project.load("projects/oktedi/rivmapper.yaml")
+    >>> river = project.river("OkTedi")
+    >>> river.reaches.buffer_width
     0.5
 """
 
@@ -82,12 +82,7 @@ class SwordSettings(_Section):
     dir: Path | None = Field(
         None,
         description="Folder holding the continental SWORD geopackages. "
-        "Defaults to {data_root}/SWORD.",
-    )
-    download_url: str = "https://zenodo.org/records/15299138/files/SWORD_v17b_gpkg.zip"
-    md5: str | None = Field(
-        "fdaaad6f6b0b58f4212b99d2ad98188c",
-        description="Expected MD5 of the Zenodo zip; null skips the check.",
+        "Defaults to the shared datasets folder (see rivmapper_v2.data).",
     )
     river_types: list[int] = Field(
         default_factory=lambda: [1],
@@ -216,8 +211,16 @@ class River(BaseModel):
 
     @property
     def sword_dir(self) -> Path:
-        """Folder holding the continental SWORD geopackages."""
-        return self.sword.dir if self.sword.dir else self.data_root / "SWORD"
+        """Folder holding the continental SWORD geopackages.
+
+        ``sword: dir:`` if set, otherwise the shared datasets folder
+        (``<repo>/data/SWORD`` in a git checkout; see ``rivmapper_v2.data``).
+        """
+        if self.sword.dir:
+            return self.sword.dir
+        from .data import dataset_dir, get_dataset
+
+        return dataset_dir(get_dataset("sword", self.sword.version))
 
     def require(self, section: str, *fields: str) -> None:
         """Raise ConfigError if any of ``fields`` in ``section`` is unset.

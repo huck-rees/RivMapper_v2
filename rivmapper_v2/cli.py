@@ -1,4 +1,8 @@
-"""Command-line interface: ``rivmapper init | validate | run | migrate``."""
+"""Command-line interface: ``rivmapper init | validate | run | data | migrate``.
+
+Heavy libraries (pandas, geopandas, pydantic) are imported inside each
+command, so ``rivmapper --version`` and ``--help`` respond instantly.
+"""
 
 from __future__ import annotations
 
@@ -8,9 +12,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .config import ConfigError, Project
-from .pipeline import STEPS, run_pipeline
-from .templates import RIVERS_TEMPLATE, render_config
+from .paths import STEP_NAMES
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -29,6 +31,8 @@ def _split(value: str | None) -> list[str] | None:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
+    from .templates import RIVERS_TEMPLATE, render_config
+
     out = Path(args.directory)
     out.mkdir(parents=True, exist_ok=True)
     targets = {
@@ -47,12 +51,19 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
+    from .config import Project
+    from .data import get_dataset, status
+
     project = Project.load(args.config)
     s = project.settings
+    sword_dirs = sorted({r.sword_dir for r in project.rivers}) or [None]
+    sword_ds = get_dataset("sword", s.sword.version)
     print(f"Config:      {project.config_path}")
     print(f"Rivers:      {s.rivers_table} ({len(project.rivers)} rivers)")
-    print(f"Data root:   {s.data_root}")
-    print(f"SWORD:       {s.sword.version} in {s.sword.dir or s.data_root / 'SWORD'}")
+    print(f"Outputs:     {s.data_root}")
+    for d in sword_dirs:
+        state = "" if d is None else f"  [{status(sword_ds, d)}]"
+        print(f"SWORD:       {s.sword.version} in {d}{state}")
     print()
     header = f"{'river':<24}{'cont':<6}{'us_reach_id':<14}{'ds_reach_id':<14}overrides"
     print(header)
@@ -83,6 +94,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    from .config import Project
+    from .pipeline import run_pipeline
+
     project = Project.load(args.config)
     if args.overwrite:
         project.rivers = [
@@ -99,13 +113,76 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 1 if {"failed", "blocked", "stale"} & set(counts) else 0
 
 
+def cmd_data(args: argparse.Namespace) -> int:
+    from . import data
+
+    names = data.dataset_names()
+    if args.action == "path":
+        print(data.datasets_dir())
+        return 0
+
+    selected = names if (args.all or not args.names) else args.names
+    unknown = [n for n in selected if n not in names]
+    if unknown:
+        raise KeyError(f"Unknown dataset(s) {unknown}. Available: {names}")
+    folder = Path(args.dir).resolve() if getattr(args, "dir", None) else None
+
+    if args.action == "list":
+        print(f"Datasets folder: {data.datasets_dir()}\n")
+        print(f"{'name':<10}{'version':<10}{'size':>8}  {'status':<24}location")
+        for n in selected:
+            ds = data.get_dataset(n)
+            where = data.dataset_dir(ds, folder)
+            state = data.status(ds, where)
+            size = f"{ds.size_gb} GB" if ds.size_gb else ""
+            print(f"{n:<10}{ds.version:<10}{size:>8}  {state:<24}{where}")
+        return 0
+
+    if args.action == "fetch":
+        if not args.names and not args.all:
+            raise ValueError(
+                "name a dataset (e.g. `rivmapper data fetch sword`) or use --all"
+            )
+        for n in selected:
+            path = data.fetch(n, args.version, folder=folder, force=args.force)
+            print(f"{n}: ready in {path}")
+        return 0
+
+    if args.action == "verify":
+        bad = 0
+        for n in selected:
+            problems = data.verify(n, args.version, folder=folder)
+            if problems:
+                bad += 1
+                print(f"{n}: PROBLEMS")
+                for p in problems:
+                    print(f"  - {p}")
+            else:
+                print(f"{n}: ok")
+        return 1 if bad else 0
+
+    if args.action == "cite":
+        for n in selected:
+            ds = data.get_dataset(n)
+            print(f"{ds.title} ({ds.version})")
+            if ds.citation:
+                print(f"  {ds.citation}")
+            if ds.doi:
+                print(f"  Data: https://doi.org/{ds.doi}")
+            if ds.license:
+                print(f"  License: {ds.license}")
+            print()
+        return 0
+    raise ValueError(f"unknown action {args.action}")
+
+
 def cmd_migrate(args: argparse.Namespace) -> int:
     from .migrate import migrate_master_csv
 
     report = migrate_master_csv(args.master_csv, args.out, force=args.force)
     print(report)
     print(
-        f"\nNext: review {report.config_path.name} (set gee.project, sword.dir), "
+        f"\nNext: review {report.config_path.name} (gee.project, sword.dir), "
         f"then `rivmapper validate {report.config_path}`"
     )
     return 0
@@ -136,13 +213,25 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("run", help="run pipeline steps")
     p.add_argument("config", help="path to rivmapper.yaml")
     p.add_argument(
-        "--steps", help=f"comma-separated subset of: {','.join(STEPS)} (default: all)"
+        "--steps",
+        help=f"comma-separated subset of: {','.join(STEP_NAMES)} (default: all)",
     )
     p.add_argument("--rivers", help="comma-separated river names (default: all)")
     p.add_argument(
         "--overwrite", action="store_true", help="rebuild outputs even if they exist"
     )
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser(
+        "data", help="list, download, verify or cite external datasets (SWORD, ...)"
+    )
+    p.add_argument("action", choices=["list", "fetch", "verify", "cite", "path"])
+    p.add_argument("names", nargs="*", help="dataset name(s), e.g. sword")
+    p.add_argument("--all", action="store_true", help="all registered datasets")
+    p.add_argument("--version", help="dataset version (default: registry default)")
+    p.add_argument("--dir", help="folder to use instead of the default datasets folder")
+    p.add_argument("--force", action="store_true", help="re-download even if present")
+    p.set_defaults(func=cmd_data)
 
     p = sub.add_parser("migrate", help="convert an old master CSV to yaml + rivers.csv")
     p.add_argument("master_csv")
@@ -157,7 +246,13 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(args.verbose)
     try:
         return args.func(args)
-    except (ConfigError, FileNotFoundError, FileExistsError, KeyError, ValueError) as e:
+    except (
+        FileNotFoundError,
+        FileExistsError,
+        KeyError,
+        ValueError,
+        RuntimeError,
+    ) as e:
         msg = e.args[0] if isinstance(e, KeyError) and e.args else e
         print(f"error: {msg}", file=sys.stderr)
         return 2

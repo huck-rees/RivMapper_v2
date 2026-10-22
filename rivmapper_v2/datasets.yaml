@@ -1,0 +1,49 @@
+# External datasets used by RivMapper v2.
+#
+# Each entry is one dataset at one version. `rivmapper data fetch <name>`
+# downloads it, checks the checksum, unpacks it into
+# {datasets dir}/{subdir}/ and records a manifest. Pipeline steps call the
+# same code, so a missing dataset is fetched automatically on first use.
+#
+# Fields:
+#   default_version   version used when a project does not specify one
+#   versions.<v>.url  direct download URL (a stable, versioned link)
+#   versions.<v>.hash checksum of the download, "md5:..." or "sha256:..."
+#   versions.<v>.size_gb  approximate download size, shown before fetching
+#   versions.<v>.unpack   what to keep from an archive (glob), flattened
+#   versions.<v>.expect   files that must exist afterwards ({version} filled in)
+#   subdir            folder under the datasets dir
+#   access            "download" (fetchable) | "gee" | "manual"
+
+sword:
+  title: SWOT River Database (SWORD)
+  subdir: SWORD
+  access: download
+  license: CC-BY-4.0
+  default_version: v17b
+  versions:
+    v17b:
+      url: https://zenodo.org/records/15299138/files/SWORD_v17b_gpkg.zip
+      hash: md5:fdaaad6f6b0b58f4212b99d2ad98188c
+      size_gb: 2.1
+      doi: 10.5281/zenodo.15299138
+      unpack: "*.gpkg"
+      expect:
+        - af_sword_reaches_{version}.gpkg
+        - af_sword_nodes_{version}.gpkg
+        - as_sword_reaches_{version}.gpkg
+        - as_sword_nodes_{version}.gpkg
+        - eu_sword_reaches_{version}.gpkg
+        - eu_sword_nodes_{version}.gpkg
+        - na_sword_reaches_{version}.gpkg
+        - na_sword_nodes_{version}.gpkg
+        - oc_sword_reaches_{version}.gpkg
+        - oc_sword_nodes_{version}.gpkg
+        - sa_sword_reaches_{version}.gpkg
+        - sa_sword_nodes_{version}.gpkg
+  citation: >-
+    Altenau, E. H., Pavelsky, T. M., Durand, M. T., Yang, X., Frasson,
+    R. P. d. M., & Bendezu, L. (2021). The Surface Water and Ocean
+    Topography (SWOT) Mission River Database (SWORD): A global river
+    network for satellite data products. Water Resources Research, 57,
+    e2021WR030054. https://doi.org/10.1029/2021WR030054

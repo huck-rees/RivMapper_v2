@@ -73,3 +73,8 @@ htmlcov/
 
 # Example project outputs
 examples/*/output/
+
+# Local data and projects (see README: shared datasets live in data/,
+# your own projects in projects/). Never committed.
+/data/
+/projects/
