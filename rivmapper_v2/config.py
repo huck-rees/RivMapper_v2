@@ -208,10 +208,63 @@ class MaskSettings(_Section):
         return self
 
 
+class ProcessSettings(_Section):
+    """Parameters for step ``process_masks`` (counts → channel masks).
+
+    Spatial settings are multiples of the reach's channel width W
+    (``width_ref`` in the reach polygons), so defaults carry across rivers.
+    See docs/methods/processing.md. All can be set per river.
+    """
+
+    states: int = Field(
+        3,
+        ge=2,
+        le=3,
+        description="HMM states: 3 = dry/margin/channel, 2 = dry/channel.",
+    )
+    fit_sample_px: int = Field(
+        50_000, ge=1000, description="Pixels sampled to fit the HMM per river."
+    )
+    envelope_threshold: float | Literal["calibrate"] = Field(
+        "calibrate",
+        description="Threshold on P(channel)+P(margin), or 'calibrate' to match "
+        "bankfull width.",
+    )
+    core_threshold: float = Field(0.5, gt=0, lt=1)
+    max_infer_gap: int = Field(
+        2, ge=0, description="Years an unobserved year may sit from observed ones."
+    )
+    use_le07_gap_years: bool = True
+    bridge_closing_widths: float = Field(0.5, ge=0)
+    bridge_max_widths: float = Field(5.0, ge=0)
+    grow_widths: float = Field(1.0, ge=0)
+    max_inscribed_widths: float = Field(1.25, gt=0)
+    dead_end_widths: float = Field(3.0, ge=0)
+    dead_end_widths_braided: float = Field(10.0, ge=0)
+    min_component_w2: float = Field(4.0, ge=0)
+    fill_hole_w2: float = Field(0.25, ge=0)
+    outlier_mad: float = Field(3.0, gt=0)
+    use_channel_belt: bool = False
+    max_hand_m: float | None = Field(None, gt=0)
+    resolvable_px: float = Field(
+        3.0, gt=0, description="Reaches narrower than this many pixels are flagged."
+    )
+
+    @model_validator(mode="after")
+    def _threshold_range(self) -> ProcessSettings:
+        t = self.envelope_threshold
+        if t != "calibrate" and not 0 < t < 1:
+            raise ValueError(
+                f"envelope_threshold must be between 0 and 1 or 'calibrate' (got {t})"
+            )
+        return self
+
+
 # Sections whose fields may be overridden per river in the rivers table.
 OVERRIDABLE_SECTIONS: dict[str, type[_Section]] = {
     "reaches": ReachSettings,
     "masks": MaskSettings,
+    "process": ProcessSettings,
 }
 OVERRIDE_COLUMNS: dict[str, str] = {
     field: section
@@ -260,6 +313,7 @@ class ProjectSettings(_Section):
     gee: GeeSettings = Field(default_factory=GeeSettings)
     reaches: ReachSettings = Field(default_factory=ReachSettings)
     masks: MaskSettings = Field(default_factory=MaskSettings)
+    process: ProcessSettings = Field(default_factory=ProcessSettings)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -279,6 +333,7 @@ class River(BaseModel):
     gee: GeeSettings
     reaches: ReachSettings
     masks: MaskSettings
+    process: ProcessSettings = Field(default_factory=ProcessSettings)
     overwrite: bool = False
     row_number: int | None = Field(
         None, description="Spreadsheet row in rivers.csv (header = row 1)."

@@ -6,7 +6,7 @@ from typing import Any
 
 import yaml
 
-from .config import MaskSettings, ReachSettings, SwordSettings
+from .config import MaskSettings, ProcessSettings, ReachSettings, SwordSettings
 
 
 def _v(value: Any) -> str:
@@ -21,10 +21,12 @@ def render_config(
     sword_dir: str | None = None,
     reaches: dict[str, Any] | None = None,
     masks: dict[str, Any] | None = None,
+    process: dict[str, Any] | None = None,
 ) -> str:
     """Return a commented rivmapper.yaml with the given values filled in."""
     r = {**ReachSettings().model_dump(), **(reaches or {})}
     m = {**MaskSettings().model_dump(), **(masks or {})}
+    pr = {**ProcessSettings().model_dump(), **(process or {})}
     s = SwordSettings()
     return f"""\
 # RivMapper v2 project configuration
@@ -109,6 +111,29 @@ masks:
   dswe_level: {_v(m["dswe_level"])}          # water = DSWE class 1..dswe_level (1-4)
   percentile: {_v(m["percentile"])}          # per-pixel percentile of per-scene water (50 = median)
   min_pixels: {_v(m["min_pixels"])}
+
+# Step 04: raw counts → annual channel masks (process_masks; in development).
+# Spatial settings are multiples of the reach's channel width W. See
+# docs/methods/processing.md.
+process:
+  states: {_v(pr["states"])}                     # HMM states: 3 = dry/margin/channel, 2 = dry/channel
+  fit_sample_px: {_v(pr["fit_sample_px"])}           # pixels sampled to fit the HMM per river
+  envelope_threshold: {_v(pr["envelope_threshold"])}   # near-bankfull mask threshold, or calibrate
+  core_threshold: {_v(pr["core_threshold"])}            # low-flow core mask threshold on P(channel)
+  max_infer_gap: {_v(pr["max_infer_gap"])}              # empty years within this many years of data are inferred
+  use_le07_gap_years: {_v(pr["use_le07_gap_years"])}       # count SLC-off Landsat 7 gap years as observed
+  bridge_closing_widths: {_v(pr["bridge_closing_widths"])}     # gap-closing radius (W)
+  bridge_max_widths: {_v(pr["bridge_max_widths"])}         # longest reconnecting path (W)
+  grow_widths: {_v(pr["grow_widths"])}               # growth from core into the envelope (W)
+  max_inscribed_widths: {_v(pr["max_inscribed_widths"])}     # wider blobs off the centreline are removed (W, radius)
+  dead_end_widths: {_v(pr["dead_end_widths"])}           # dead-end branches longer than this are pruned (W)
+  dead_end_widths_braided: {_v(pr["dead_end_widths_braided"])}  # same, braided reaches
+  min_component_w2: {_v(pr["min_component_w2"])}          # smallest kept component (W²)
+  fill_hole_w2: {_v(pr["fill_hole_w2"])}             # largest dry hole filled (W²)
+  outlier_mad: {_v(pr["outlier_mad"])}               # year-to-year area check (MADs)
+  use_channel_belt: {_v(pr["use_channel_belt"])}        # limit to the Nyberg et al. (2023) channel belt
+  max_hand_m: {_v(pr["max_hand_m"])}               # drop water higher than this above the channel (m)
+  resolvable_px: {_v(pr["resolvable_px"])}             # reaches narrower than this many pixels are flagged
 """
 
 

@@ -21,6 +21,7 @@ dependencies = [
     "pandas>=2.1",
     "matplotlib",
     "scipy",
+    "scikit-image>=0.21",
     "pydantic>=2.5",
     "pyyaml",
     "requests",
@@ -33,6 +34,11 @@ dependencies = [
 rivmapper = "rivmapper_v2.cli:main"
 
 [project.optional-dependencies]
+discharge = [
+    "xarray",
+    "zarr",
+    "s3fs",
+]
 dev = [
     "pytest",
     "ruff",

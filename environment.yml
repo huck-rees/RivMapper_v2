@@ -10,6 +10,7 @@ dependencies:
   - pandas
   - matplotlib
   - scipy
+  - scikit-image
   - jupyterlab
   - ipywidgets
   - geemap

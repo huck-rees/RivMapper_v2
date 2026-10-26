@@ -9,17 +9,19 @@ import pandas as pd
 
 from . import masks, reaches, sword
 from .config import Project, River
+from .process import step as process_step
 from .results import BLOCKED, StepResult
 
 log = logging.getLogger(__name__)
 
 StepFn = Callable[[Project, list[River]], list[StepResult]]
 
-# Pipeline order. Masks (03) and QC (04) will be appended as they are ported.
+# Pipeline order.
 STEPS: dict[str, StepFn] = {
     sword.STEP: sword.run,
     reaches.STEP: reaches.run,
     masks.STEP: masks.run,
+    process_step.STEP: process_step.run,
 }
 
 
