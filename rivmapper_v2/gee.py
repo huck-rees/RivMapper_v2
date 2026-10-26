@@ -246,17 +246,15 @@ def dswe_counts(geometry, year: int):
             .unmask(0)
         )
 
-    # A zero image keeps the sum well-defined (five bands) even when no scene
-    # touches ``geometry``; it adds nothing to the counts.
-    zero = ee.Image.constant([0] * len(COUNT_BANDS)).rename(COUNT_BANDS).toUint8()
-    counts = (
-        col.map(_per_scene)
-        .merge(ee.ImageCollection([zero]))
-        .sum()
-        .min(COUNT_MAX)
-        .toUint8()
-        .rename(COUNT_BANDS)
+    # When no scene touches ``geometry`` (possible for a single tile), summing
+    # an empty collection gives an image with no bands; use all-zero counts
+    # instead. (Chosen server-side with If: merging a constant image into the
+    # collection fails EE's same-pixel-type check.)
+    zero = ee.Image.constant([0] * len(COUNT_BANDS)).rename(COUNT_BANDS)
+    summed = ee.Image(
+        ee.Algorithms.If(col.size().gt(0), col.map(_per_scene).sum(), zero)
     )
+    counts = summed.min(COUNT_MAX).toUint8().rename(COUNT_BANDS)
     return counts, col.size()
 
 
