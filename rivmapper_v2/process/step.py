@@ -1,28 +1,57 @@
 """Step ``process_masks``: raw DSWE counts → annual channel masks.
 
-Phase 0 scaffold. The step already validates its inputs (reach polygons,
-widths, every raw reach-year file, the reach windows) and writes a run
-record, but does not yet write masks; it reports ``skipped`` so a full
-pipeline run is not mistaken for a finished one. The processing itself
-(HMM, channel extraction, year check) lands in phase 1 — see
-docs/methods/processing.md and the implementation plan.
+Per river, in five passes:
+
+1. **Fit** the HMM (``hmm.py``) on a sample of pixels from every reach.
+2. **Posteriors** for every pixel and year, per reach, cached in
+   ``masks/model/`` (P(channel), P(margin), × 100).
+3. **Extract** the channel window by window (``windows.py``,
+   ``channel.py``): each reach with its two neighbours, years in order so
+   each year's channel seeds the next; only the centre reach is kept.
+4. **Check** each reach's channel area against its 5-year running median;
+   outliers are rerun once with a stricter envelope threshold, then
+   flagged if still out (``qa.py``).
+5. **Write** masks, the QA table, QA figures and the run record.
+
+Outputs per reach-year, ``masks/processed/{river}_r{NNN}_{year}.tif``
+(uint8, nodata 255 outside the reach polygon and in ``no_data`` years):
+
+* band 1 ``channel``: near-bankfull channel (0/1);
+* band 2 ``core``: low-flow core channel (0/1);
+* band 3 ``p_envelope``: P(channel) + P(margin) × 100;
+* band 4 ``p_core``: P(channel) × 100.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+
 from ..config import Project, River
-from ..provenance import write_run_record
-from ..results import FAILED, SKIPPED, StepResult
-from .windows import RiverLayout
+from ..gee import NODATA, Grid
+from ..provenance import recorded_parameters, write_run_record
+from ..results import FAILED, OK, STALE, StepResult, check_existing
+from . import hmm, qa
+from .channel import ChannelInputs, extract
+from .windows import RiverLayout, Window, offset, read_raw, read_reach_stack
 
 log = logging.getLogger(__name__)
 
 STEP = "process_masks"
+PRODUCT = "channel_masks_v1"
+OUT_BANDS = ("channel", "core", "p_envelope", "p_core")
+RAW_BANDS = ("n_obs", "n_wet_2", "n_wet_3")
+STRICT_STEP = 0.2  # envelope threshold increase for outlier reruns
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Inputs
+# ─────────────────────────────────────────────────────────────────────
 def check_inputs(river: River) -> tuple[RiverLayout, list[int]]:
     """Load the reach layout and confirm every raw file exists.
 
@@ -52,46 +81,489 @@ def check_inputs(river: River) -> tuple[RiverLayout, list[int]]:
     return layout, years
 
 
+def _raw_fingerprint(path: Path) -> dict:
+    import rasterio
+
+    with rasterio.open(path) as src:
+        tag = src.tags().get("rivmapper_params")
+    return json.loads(tag) if tag else {}
+
+
+def _envelope_threshold(river: River) -> tuple[float, str]:
+    t = river.process.envelope_threshold
+    if t == "calibrate":
+        return 0.5, "calibration not yet implemented (phase 3); used 0.5"
+    return float(t), "fixed"
+
+
+def _parameters(river: River, raw_fp: dict) -> dict:
+    return {
+        "product": PRODUCT,
+        "raw_product": raw_fp.get("product"),
+        "years": [river.masks.year_start, river.masks.year_end],
+        **river.process.model_dump(mode="json"),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Passes 1–2: HMM
+# ─────────────────────────────────────────────────────────────────────
+def _sample(layout, paths, years, n_target, rng) -> np.ndarray:
+    """Observations (T, P, 3) for a sample: half near the reach lines."""
+    from scipy.ndimage import distance_transform_edt
+
+    lines = _reach_lines(paths)
+    total = 0
+    sizes = {}
+    for o in layout.ds_orders:
+        g = layout.grids[o]
+        sizes[o] = int((layout.owner(g, [o]) == o).sum())
+        total += sizes[o]
+    parts = []
+    for o in layout.ds_orders:
+        g, st = read_reach_stack(paths, o, years, RAW_BANDS)
+        inside = st["n_obs"][0] != NODATA
+        k = max(50, round(n_target * sizes[o] / max(total, 1)))
+        line = layout.rasterize_line(_lines_for(lines, [o]), g, width_px=0)
+        near = inside & (distance_transform_edt(~line) <= 2 * layout.width_px(o))
+        idx_near = np.flatnonzero(near.ravel())
+        idx_all = np.flatnonzero(inside.ravel())
+        pick = np.concatenate(
+            [
+                rng.choice(idx_near, min(k // 2, idx_near.size), replace=False)
+                if idx_near.size
+                else np.array([], int),
+                rng.choice(idx_all, min(k - k // 2, idx_all.size), replace=False),
+            ]
+        )
+        flat = {b: st[b].reshape(len(years), -1)[:, pick] for b in RAW_BANDS}
+        parts.append(hmm.observations(flat["n_obs"], flat["n_wet_2"], flat["n_wet_3"]))
+    return np.concatenate(parts, axis=1)
+
+
+def _write_posterior(path: Path, grid: Grid, years, p_ch, p_mg, inside) -> None:
+    import rasterio
+    from rasterio.transform import from_origin
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    T = len(years)
+    data = np.full((2 * T, grid.height, grid.width), NODATA, np.uint8)
+    data[:T][:, inside] = np.round(100 * p_ch).astype(np.uint8)
+    data[T:][:, inside] = np.round(100 * p_mg).astype(np.uint8)
+    profile = {
+        "driver": "GTiff",
+        "width": grid.width,
+        "height": grid.height,
+        "count": 2 * T,
+        "dtype": "uint8",
+        "crs": grid.crs,
+        "transform": from_origin(grid.x0, grid.y0, grid.res, grid.res),
+        "nodata": NODATA,
+        "compress": "deflate",
+        "tiled": True,
+        "blockxsize": 256,
+        "blockysize": 256,
+        "interleave": "band",
+    }
+    tmp = path.with_suffix(".part.tif")
+    with rasterio.open(tmp, "w", **profile) as dst:
+        dst.write(data)
+        for i, y in enumerate(years):
+            dst.set_band_description(i + 1, f"p_channel_{y}")
+            dst.set_band_description(T + i + 1, f"p_margin_{y}")
+    tmp.replace(path)
+
+
+def _posteriors(layout, paths, years, params) -> dict[int, dict]:
+    """Pass 2: posteriors + coverage per reach. Returns {ds_order: info}."""
+    info = {}
+    for o in layout.ds_orders:
+        g, st = read_reach_stack(paths, o, years, RAW_BANDS)
+        inside = st["n_obs"][0] != NODATA
+        obs = hmm.observations(*(st[b][:, inside] for b in RAW_BANDS))
+        p_ch, p_mg = hmm.posteriors(obs, params)
+        _write_posterior(paths.posterior(o), g, years, p_ch, p_mg, inside)
+        n_in = max(int(inside.sum()), 1)
+        coverage = [
+            (st["n_obs"][t][inside] > 0).sum() / n_in for t in range(len(years))
+        ]
+        info[o] = {"coverage": coverage, "inside_px": n_in}
+    return info
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Pass 3: windows
+# ─────────────────────────────────────────────────────────────────────
+def _reach_lines(paths):
+    import geopandas as gpd
+
+    if not paths.reach_lines.exists():
+        raise FileNotFoundError(f"reach lines not found at {paths.reach_lines}")
+    return gpd.read_file(paths.reach_lines)
+
+
+def _lines_for(lines, members):
+    sel = lines[lines["ds_order"].isin(members)]
+    return sel.geometry.union_all() if len(sel) else None
+
+
+def _mosaic(window: Window, layout, reader, n_out: int, fill) -> list[np.ndarray]:
+    """Mosaic per-reach arrays onto the window grid.
+
+    ``reader(ds_order)`` returns (grid, [arrays], inside).
+    """
+    shape = (window.grid.height, window.grid.width)
+    outs = [np.full(shape, fill, dtype=np.float32) for _ in range(n_out)]
+    for o in window.members:
+        g, arrs, inside = reader(o)
+        r, c = offset(g, window.grid)
+        sub = (slice(r, r + g.height), slice(c, c + g.width))
+        for out, a in zip(outs, arrs, strict=True):
+            out[sub][inside] = a[inside]
+    return outs
+
+
+def _read_post_band(paths, o, band: int):
+    import rasterio
+
+    with rasterio.open(paths.posterior(o)) as src:
+        return src.read(band)
+
+
+def _window_year(paths, layout, window, years, t):
+    """Raw counts (this year and last) and posteriors on the window grid."""
+    T = len(years)
+
+    def raw(o, year):
+        g, a = read_raw(paths.raw_mask(o, year), ("n_obs", "n_wet_3"))
+        inside = a["n_obs"] != NODATA
+        return g, [a["n_obs"], a["n_wet_3"]], inside
+
+    def post(o):
+        g = layout.grids[o]
+        pc = _read_post_band(paths, o, t + 1)
+        pm = _read_post_band(paths, o, T + t + 1)
+        inside = pc != NODATA
+        return g, [pc / 100.0, pm / 100.0], inside
+
+    def raw_prev(o):
+        g, arrs, inside = raw(o, years[t - 1])
+        return g, arrs[:1], inside
+
+    n_obs, n_wet_3 = _mosaic(window, layout, lambda o: raw(o, years[t]), 2, 0)
+    if t > 0:
+        (n_prev,) = _mosaic(window, layout, raw_prev, 1, 0)
+    else:
+        n_prev = np.zeros_like(n_obs)
+    p_ch, p_mg = _mosaic(window, layout, post, 2, 0)
+    return n_obs, n_wet_3, n_prev, p_ch, p_mg
+
+
+def _process_window(river, layout, paths, window, years, status, env_thr, lines):
+    """Extract every year of one window. Returns per-year centre results."""
+    s = river.process
+    W = layout.width_px(window.center)
+    owner = layout.owner(window.grid, window.members)
+    inside = owner > 0
+    centre = owner == window.center
+    centerline = layout.rasterize_line(
+        _lines_for(lines, window.members), window.grid, width_px=0
+    )
+    by_reach = {
+        int(o): g for o, g in zip(lines["ds_order"], lines.geometry, strict=True)
+    }
+    term = layout.terminals(window, by_reach, inside, radius_px=max(10 * W, 20))
+    prev = None
+    masks = {}
+    results = {}
+    for t, y in enumerate(years):
+        st = status[window.center][y]
+        if st == qa.NO_DATA:
+            results[y] = None
+            continue
+        n_obs, n_wet_3, n_prev, p_ch, p_mg = _window_year(
+            paths, layout, window, years, t
+        )
+        inp = ChannelInputs(
+            p_channel=p_ch,
+            p_margin=p_mg,
+            n_obs=n_obs,
+            n_wet_3=n_wet_3,
+            n_obs_prev=n_prev,
+            inside=inside,
+            centerline=centerline,
+            prev_mask=prev,
+            width_px=W,
+            terminals=term,
+        )
+        res = extract(inp, s, env_thr)
+        results[y] = {
+            "res": res,
+            "inp_prev": prev,
+            "p_ch": p_ch,
+            "p_mg": p_mg,
+            "inp": inp,
+        }
+        masks[y] = res.channel
+        prev = res.channel
+    # Pass 4: year-to-year check on the centre reach. Too much water is
+    # rerun once with a stricter envelope threshold (it is usually false
+    # water from bad scenes or a flood); too little is only flagged.
+    obs_years = [
+        y for y in years if status[window.center][y] in (qa.OBSERVED, qa.SPARSE)
+    ]
+    area = [float(results[y]["res"].channel[centre].sum()) for y in obs_years]
+    scores = qa.outlier_scores(area, signed=True)
+    for i, y in enumerate(obs_years):
+        results[y]["score"] = float(scores[i])
+        if scores[i] > s.outlier_mad:
+            strict = min(env_thr + STRICT_STEP, 0.95)
+            res2 = extract(results[y]["inp"], s, strict)
+            a2 = list(area)
+            a2[i] = float(res2.channel[centre].sum())
+            sc2 = float(qa.outlier_scores(a2, signed=True)[i])
+            results[y]["rerun"] = True
+            if abs(sc2) < abs(scores[i]):
+                results[y]["res"] = res2
+                results[y]["score"] = sc2
+    return centre, results
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Pass 5: outputs
+# ─────────────────────────────────────────────────────────────────────
+def _write_mask(path, grid, bands: dict, tags: dict) -> None:
+    import rasterio
+    from rasterio.transform import from_origin
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    profile = {
+        "driver": "GTiff",
+        "width": grid.width,
+        "height": grid.height,
+        "count": len(OUT_BANDS),
+        "dtype": "uint8",
+        "crs": grid.crs,
+        "transform": from_origin(grid.x0, grid.y0, grid.res, grid.res),
+        "nodata": NODATA,
+        "compress": "deflate",
+        "tiled": True,
+        "blockxsize": 256,
+        "blockysize": 256,
+    }
+    desc = {
+        "channel": "near-bankfull channel (0/1)",
+        "core": "low-flow core channel (0/1)",
+        "p_envelope": "P(channel) + P(margin) x 100",
+        "p_core": "P(channel) x 100",
+    }
+    tmp = path.with_suffix(".part.tif")
+    with rasterio.open(tmp, "w", **profile) as dst:
+        for i, b in enumerate(OUT_BANDS, start=1):
+            dst.write(bands[b], i)
+            dst.set_band_description(i, f"{b}: {desc[b]}")
+        dst.update_tags(
+            **{k: (v if isinstance(v, str) else json.dumps(v)) for k, v in tags.items()}
+        )
+    tmp.replace(path)
+
+
+def _flags(row, river: River, width_px: float) -> str:
+    f = []
+    if row["status"] in (qa.SPARSE, qa.INFERRED):
+        f.append(row["status"])
+    if width_px < 2:
+        f.append("unresolved")
+    elif width_px < river.process.resolvable_px:
+        f.append("marginal")
+    sc = row.get("score")
+    if sc is not None and np.isfinite(sc) and abs(sc) > river.process.outlier_mad:
+        f.append("area_high" if sc > 0 else "area_low")
+    return ";".join(f)
+
+
 def process_masks(river: River, config_path: Path | None = None) -> StepResult:
     """Run step ``process_masks`` for one river."""
+    t0 = time.time()
     try:
         layout, years = check_inputs(river)
     except (FileNotFoundError, ValueError) as e:
         return StepResult(river.name, STEP, FAILED, str(e))
+    p = river.paths
+    raw_fp = _raw_fingerprint(p.raw_mask(layout.ds_orders[0], years[0]))
+    params = _parameters(river, raw_fp)
+    outputs = [p.processed_mask(o, y) for o in layout.ds_orders for y in years]
+    existing = check_existing(
+        river.name, STEP, outputs, p.run_record(STEP), params, river.overwrite
+    )
+    if existing:
+        return existing
+    previous = recorded_parameters(p.run_record(STEP))
+    if (
+        not river.overwrite
+        and previous is not None
+        and previous != params
+        and any(o.exists() for o in outputs)
+    ):
+        return StepResult(
+            river.name,
+            STEP,
+            STALE,
+            "existing masks were made with different settings; use --overwrite",
+        )
 
-    windows = layout.windows()
-    narrow = [
-        o for o in layout.ds_orders if layout.width_px(o) < river.process.resolvable_px
-    ]
+    s = river.process
+    env_thr, env_note = _envelope_threshold(river)
+    rng = np.random.default_rng(0)
+
+    log.info("  fitting %d-state HMM on %d sampled pixels", s.states, s.fit_sample_px)
+    sample = _sample(layout, p, years, s.fit_sample_px, rng)
+    params_hmm = hmm.fit(sample, s.states)
+    log.info("  posteriors for %d reaches", len(layout.ds_orders))
+    info = _posteriors(layout, p, years, params_hmm)
+    status = {
+        o: qa.year_status(years, info[o]["coverage"], s.max_infer_gap)
+        for o in layout.ds_orders
+    }
+
+    lines = _reach_lines(p)
+    rows = []
+    thumbs_all = {}
+    for window in layout.windows():
+        o = window.center
+        centre, results = _process_window(
+            river, layout, p, window, years, status, env_thr, lines
+        )
+        g = layout.grids[o]
+        r0, c0 = offset(g, window.grid)
+        sub = (slice(r0, r0 + g.height), slice(c0, c0 + g.width))
+        inside = centre[sub]
+        W = layout.width_px(o)
+        thumb_years = [y for y in years if status[o][y] == qa.OBSERVED]
+        thumb_years = (
+            [
+                thumb_years[i]
+                for i in np.linspace(0, len(thumb_years) - 1, 6).round().astype(int)
+            ]
+            if len(thumb_years) >= 6
+            else thumb_years
+        )
+        thumbs = {}
+        for t, y in enumerate(years):
+            res = results[y]
+            bands = {
+                b: np.full((g.height, g.width), NODATA, np.uint8) for b in OUT_BANDS
+            }
+            row = {
+                "ds_order": o,
+                "year": y,
+                "status": status[o][y],
+                "coverage": round(float(info[o]["coverage"][t]), 4),
+            }
+            if res is not None:
+                ch = res["res"].channel[sub]
+                co = res["res"].core[sub]
+                pe = np.clip(res["p_ch"][sub] + res["p_mg"][sub], 0, 1)
+                pc = res["p_ch"][sub]
+                bands["channel"][inside] = ch[inside]
+                bands["core"][inside] = co[inside]
+                bands["p_envelope"][inside] = np.round(100 * pe[inside]).astype(
+                    np.uint8
+                )
+                bands["p_core"][inside] = np.round(100 * pc[inside]).astype(np.uint8)
+                px_km2 = layout.res**2 / 1e6
+                row.update(
+                    channel_km2=round(float((ch & inside).sum() * px_km2), 4),
+                    core_km2=round(float((co & inside).sum() * px_km2), 4),
+                    score=res.get("score"),
+                    rerun=bool(res.get("rerun", False)),
+                    **{
+                        k: v
+                        for k, v in res["res"].stats.items()
+                        if k
+                        in (
+                            "bridges_joined",
+                            "removed_wide_px",
+                            "dead_ends_removed",
+                            "through",
+                        )
+                    },
+                )
+                if y in thumb_years:
+                    thumbs[y] = (ch & inside, co & inside, inside)
+            else:
+                row.update(channel_km2=np.nan, core_km2=np.nan, score=None, rerun=False)
+            row["mean_width_over_W"] = np.nan
+            row["flags"] = _flags(row, river, W)
+            _write_mask(
+                p.processed_mask(o, y),
+                g,
+                bands,
+                {
+                    "rivmapper_params": params,
+                    "river": river.name,
+                    "ds_order": str(o),
+                    "year": str(y),
+                    "status": row["status"],
+                    "flags": row["flags"],
+                },
+            )
+            rows.append(row)
+        thumbs_all[o] = thumbs
+        log.info(
+            "  reach %d: %d years, %d rerun, %d flagged outliers",
+            o,
+            sum(1 for y in years if results[y] is not None),
+            sum(1 for r in rows if r["ds_order"] == o and r.get("rerun")),
+            sum(1 for r in rows if r["ds_order"] == o and "area_" in r["flags"]),
+        )
+
+    table = pd.DataFrame(rows)
+    table["score"] = pd.to_numeric(table["score"], errors="coerce").round(2)
+    table.to_csv(p.process_qa_table, index=False)
+    for o in layout.ds_orders:
+        sub_rows = table[table.ds_order == o].to_dict("records")
+        qa.reach_figure(
+            sub_rows,
+            thumbs_all[o],
+            p.mask_qa_figure(o),
+            f"{river.name} reach {o} (W = {layout.width_m(o):.0f} m, "
+            f"{layout.width_px(o):.1f} px)",
+        )
+    qa.overview_figure(
+        table,
+        p.mask_qa_dir / f"{river.name}_overview.png",
+        f"{river.name}: channel area by reach and year, relative to each reach's median",
+    )
+
+    counts = table["status"].value_counts().to_dict()
+    n_out = int(table["flags"].fillna("").str.contains("area_").sum())
     summary = {
-        "phase": "0 (scaffold: inputs checked, no masks written)",
-        "analysis_crs": layout.crs,
-        "grid_origin": list(layout.origin),
-        "n_reaches": len(layout.ds_orders),
-        "n_windows": len(windows),
-        "years": [years[0], years[-1]],
-        "reaches_below_resolvable_px": narrow,
+        "hmm": params_hmm.to_dict(),
+        "envelope_threshold": env_thr,
+        "envelope_threshold_note": env_note,
+        "status_counts": counts,
+        "area_outliers": n_out,
+        "reruns": int(table["rerun"].sum()),
+        "seconds": round(time.time() - t0, 1),
     }
     write_run_record(
-        river.paths.run_record(STEP),
+        p.run_record(STEP),
         step=STEP,
         river=river.name,
         config_path=config_path,
-        parameters=river.process.model_dump(mode="json"),
-        inputs={
-            "reach_polygons": river.paths.reach_polygons,
-            "raw_masks": river.paths.raw_masks_dir,
-        },
-        outputs={},
+        parameters=params,
+        inputs={"raw_masks": p.raw_masks_dir, "reach_polygons": p.reach_polygons},
+        outputs={"processed": p.processed_masks_dir, "qa_table": p.process_qa_table},
         summary=summary,
     )
     return StepResult(
         river.name,
         STEP,
-        SKIPPED,
-        f"not implemented yet (phase 0 scaffold): inputs OK for "
-        f"{len(layout.ds_orders)} reaches × {len(years)} years, "
-        f"{len(windows)} windows",
+        OK,
+        f"{len(outputs)} masks ({counts.get('observed', 0)} observed, "
+        f"{counts.get('sparse', 0)} sparse, {counts.get('inferred', 0)} inferred, "
+        f"{counts.get('no_data', 0)} no data; {n_out} area outliers)",
         summary,
     )
 

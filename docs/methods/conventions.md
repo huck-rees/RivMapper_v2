@@ -16,8 +16,8 @@ Each river has **one projected analysis CRS**. Every product used for measuremen
 | Extracted SWORD reaches and nodes | `{river}/sword/` | EPSG:4326. An exact subset of the source: its `x`/`y` attributes are lon/lat. Steps that use it reproject on read. | ✅ |
 | Reach lines, reach polygons, valley line | `{river}/reaches/` | River analysis CRS | ✅ |
 | Raw masks (GEE export) | `{river}/masks/raw/` | River analysis CRS, on the river's fixed 30 m grid | ✅ |
-| Processed masks | `{river}/masks/processed/` | River analysis CRS, same grid as raw | 🔜 |
-| HMM probability cache | `{river}/masks/model/` | River analysis CRS, same grid as raw | 🔜 |
+| Processed masks | `{river}/masks/processed/` | River analysis CRS, same grid as raw | ✅ |
+| HMM probability cache | `{river}/masks/model/` | River analysis CRS, same grid as raw | ✅ |
 | Channel belt (Nyberg et al., 2023, or mapped by hand), JRC occurrence | inputs | Reprojected into the river analysis CRS before any intersection or area calculation | 🔜 |
 | Summary tables | CSV / YAML | No CRS; lengths in m, areas in m² or km², all computed in the analysis CRS | ✅ |
 
@@ -45,15 +45,16 @@ Each river has **one projected analysis CRS**. Every product used for measuremen
 
 **Raw masks** (`masks/raw/`) ✅: five uint8 count bands, `n_obs` and `n_wet_1` … `n_wet_4`. These are clear observations in the calendar year, and how many of them had DSWE class 1..k. 255 = outside the reach polygon (nodata), and counts are capped at 254. `n_obs = 0` inside the polygon means no clear observation that year.
 
-**Processed masks** (`masks/processed/`) 🔜:
+**Processed masks** (`masks/processed/`) ✅: four uint8 bands, nodata 255 (outside the reach polygon, or a `no_data` year).
 
-| Value | Meaning |
+| Band | Values |
 |---|---|
-| 0 | Dry (observed, not water) |
-| 1 | Water |
-| 255 | No data: outside the reach polygon, or no clear observation |
+| 1 `channel` | 1 = near-bankfull channel, 0 = not channel |
+| 2 `core` | 1 = low-flow core channel, 0 = not |
+| 3 `p_envelope` | P(channel) + P(margin) from the HMM, × 100 |
+| 4 `p_core` | P(channel), × 100 |
 
-uint8, nodata 255. Keeping "dry" and "no data" separate is essential for area and mobility metrics. v1-era masks used 0 for both.
+Every pixel inside the polygon has a value in every written year: the HMM fills unobserved pixels from neighbouring years, and how confident that is shows in bands 3–4. Year status (`observed`, `sparse`, `inferred`) and flags are in the file tags and the QA table ([processing.md](processing.md)). v1-era masks used 0 for both dry and no data.
 
 ## Units and naming
 

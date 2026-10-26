@@ -139,7 +139,7 @@ If the old working directory already holds a `SWORD/` folder, the new config kee
 | `sword` | `rivmapper_v2/sword.py` | `{river}/sword/`: traced SWORD reaches and nodes |
 | `reaches` | `rivmapper_v2/reaches.py`, `valley.py` | `{river}/reaches/`: reach lines, polygons and valley line. Reaches are 100 channel widths of valley length, split by nearest position along the valley, so polygons never overlap. Method and citations: [docs/methods/reaches.md](docs/methods/reaches.md) |
 | `extract_masks` | `rivmapper_v2/masks.py`, `gee.py` | `{river}/masks/raw/`: annual Landsat DSWE observation counts from Earth Engine (`n_obs`, `n_wet_1`…`n_wet_4`), on the river's 30 m grid |
-| `process_masks` | `rivmapper_v2/process/` | In development (phase 0 scaffold checks inputs only). Will write `{river}/masks/processed/`: annual near-bankfull channel masks. Plan: [docs/methods/processing.md](docs/methods/processing.md) |
+| `process_masks` | `rivmapper_v2/process/` | Writes `{river}/masks/processed/`: annual near-bankfull channel and low-flow core masks, with a QA table and QA figures. In development (phase 1 of 4 done; needs `scikit-image`). Method: [docs/methods/processing.md](docs/methods/processing.md) |
 
 ## Repository structure
 

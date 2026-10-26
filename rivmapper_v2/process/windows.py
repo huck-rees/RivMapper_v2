@@ -212,6 +212,70 @@ class RiverLayout:
             dtype="uint8",
         ).astype(bool)
 
+    def river_end(self, ds_order: int, line: BaseGeometry) -> list:
+        """Points where the river leaves the network at reach ``ds_order``.
+
+        For the first (last) reach: the end of its reach line farthest from
+        the next (previous) reach. Empty for interior reaches.
+        """
+        from shapely.geometry import Point
+
+        i = self.ds_orders.index(ds_order)
+        if line is None or line.is_empty:
+            return []
+        if line.geom_type == "MultiLineString":
+            from shapely.ops import linemerge
+
+            line = linemerge(line)
+        parts = list(line.geoms) if hasattr(line, "geoms") else [line]
+        ends = [Point(c) for g in parts for c in (g.coords[0], g.coords[-1])]
+        if len(self.ds_orders) == 1:
+            return ends
+        out = []
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(self.ds_orders):
+                continue
+            # no neighbour on this side: the end farthest from the other side
+            other = self.polygons.geometry[self.ds_orders[i + 1 if j < i else i - 1]]
+            out.append(max(ends, key=other.distance))
+        return out
+
+    def terminals(
+        self,
+        window: Window,
+        lines: dict[int, BaseGeometry],
+        inside: np.ndarray,
+        radius_px: float,
+    ) -> np.ndarray:
+        """Labelled zones where water may enter or leave the window.
+
+        The cut lines to reaches outside the window, and at the river's
+        ends a disk of ``radius_px`` around the end of the reach line.
+        int16 array, 0 = none, 1..n = zones (each cut line or end its own).
+        """
+        from shapely.geometry import MultiPoint
+
+        out = np.zeros(inside.shape, np.int16)
+        k = 0
+        zones = []
+        for cut in (window.upstream_cut, window.downstream_cut):
+            if cut is not None:
+                zones.append(self.rasterize_line(cut, window.grid, width_px=1.0))
+        for o in (window.members[0], window.members[-1]):
+            pts = self.river_end(o, lines.get(o))
+            if pts and (o == self.ds_orders[0] or o == self.ds_orders[-1]):
+                for pt in pts:
+                    z = self.rasterize_line(
+                        MultiPoint([pt]), window.grid, width_px=radius_px
+                    )
+                    zones.append(z)
+        for z in zones:
+            z = z & inside & (out == 0)
+            if z.any():
+                k += 1
+                out[z] = k
+        return out
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Reading raw counts
