@@ -202,3 +202,147 @@ def test_retired_window_settings_are_ignored(synthetic_project, caplog):
     )
     Project.load(cfg)
     assert "composite_windows" in caplog.text
+
+
+# ── adaptive tiling ─────────────────────────────────────────────────────
+class MemoryLimitedEE(FakeEE):
+    """Counts that depend only on absolute map position (so any tiling must
+    reproduce them exactly), and any request over ``max_px`` pixels fails
+    the way Earth Engine does when a tile has too many scenes for memory."""
+
+    def __init__(self, max_px=10**12, message="User memory limit exceeded."):
+        super().__init__()
+        self.max_px = max_px
+        self.message = message
+        self.requests = []
+
+    def fetch(self, comp, grid):
+        self.requests.append((grid.width, grid.height))
+        if grid.width * grid.height > self.max_px:
+            raise RuntimeError(self.message)
+        xs = grid.x0 + (np.arange(grid.width) + 0.5) * grid.res
+        ys = grid.y0 - (np.arange(grid.height) + 0.5) * grid.res
+        n_obs = ((xs[None, :] // 90 + ys[:, None] // 150) % 7 + 3).astype(np.uint8)
+        wet = (((xs[None, :] // 600) + (ys[:, None] // 450)) % 2 == 0).astype(np.uint8)
+        out = {"n_obs": n_obs}
+        for k in range(1, 5):
+            out[f"n_wet_{k}"] = (wet * np.minimum(n_obs, k + 1)).astype(np.uint8)
+        return out
+
+
+def test_split_quadrants_cover_grid_exactly():
+    from rivmapper_v2.masks import split_quadrants
+
+    for w, h in [(101, 70), (1, 9), (8, 1), (2, 2)]:
+        g = Grid("EPSG:32633", 0.0, 3000.0, 30.0, w, h)
+        cover = np.zeros((h, w), int)
+        for r, c, sub in split_quadrants(g):
+            cover[r : r + sub.height, c : c + sub.width] += 1
+            assert sub.x0 == c * 30 and sub.y0 == 3000 - r * 30
+        assert (cover == 1).all()
+
+
+def test_adaptive_fetch_matches_single_download():
+    from rivmapper_v2.masks import fetch_adaptive
+
+    g = Grid("EPSG:32633", 0.0, 30000.0, 30.0, 300, 200)
+    direct = MemoryLimitedEE().fetch({"year": 2000}, g)
+    ee = MemoryLimitedEE(max_px=5000)
+    stats = {}
+    split = fetch_adaptive(ee, {"year": 2000}, g, min_px=16, stats=stats)
+    for b in direct:
+        np.testing.assert_array_equal(split[b], direct[b])
+    assert stats["splits"] > 0 and stats["tiles"] > 4
+    assert sum(w * h <= 5000 for w, h in ee.requests) == stats["tiles"]
+
+
+def test_adaptive_fetch_gives_up_at_min_size():
+    from rivmapper_v2.masks import fetch_adaptive
+
+    g = Grid("EPSG:32633", 0.0, 3000.0, 30.0, 64, 64)
+    with pytest.raises(RuntimeError, match="memory limit"):
+        fetch_adaptive(MemoryLimitedEE(max_px=10), {"year": 2000}, g, min_px=32)
+
+
+def test_adaptive_fetch_does_not_retry_other_errors():
+    from rivmapper_v2.masks import fetch_adaptive
+
+    ee = MemoryLimitedEE(max_px=0, message="Permission denied for project")
+    g = Grid("EPSG:32633", 0.0, 3000.0, 30.0, 64, 64)
+    with pytest.raises(RuntimeError, match="Permission"):
+        fetch_adaptive(ee, {"year": 2000}, g, min_px=8)
+    assert len(ee.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "msg,expected",
+    [
+        ("User memory limit exceeded.", True),
+        ("Computation timed out.", True),
+        (
+            "Total request size (52428800 bytes) must be less than or equal "
+            "to 50331648 bytes.",
+            True,
+        ),
+        ("Request payload size exceeds the limit", True),
+        ("Image.select: Pattern 'x' did not match any bands.", False),
+    ],
+)
+def test_is_resource_error(msg, expected):
+    from rivmapper_v2.masks import is_resource_error
+
+    assert is_resource_error(RuntimeError(msg)) is expected
+
+
+def test_large_tile_is_split_and_logged(mask_project):
+    import pandas as pd
+
+    from rivmapper_v2 import masks
+
+    river = mask_project.river("Synth")
+    river.masks.min_chunk_px = 32
+    ee = MemoryLimitedEE(max_px=100 * 100)  # 256 px chunks must be split
+    [res] = masks.run(mask_project, [river], backend=ee)
+    assert res.status == "ok", res.message
+    log = pd.read_csv(river.paths.masks_log)
+    assert list(log.columns) == masks.LOG_COLUMNS
+    ok = log[log.status == "ok"]
+    assert (ok.n_tiles >= 4).all()
+    # same content as an unconstrained run
+    with rasterio.open(river.paths.raw_mask(1, 2002)) as src:
+        split = src.read()
+    import shutil
+
+    shutil.rmtree(river.paths.raw_masks_dir)
+    river.paths.masks_log.unlink()
+    masks.run(mask_project, [river], backend=MemoryLimitedEE())
+    with rasterio.open(river.paths.raw_mask(1, 2002)) as src:
+        np.testing.assert_array_equal(src.read(), split)
+
+
+def test_legacy_log_columns_are_dropped(mask_project):
+    import pandas as pd
+
+    from rivmapper_v2 import masks
+
+    river = mask_project.river("Synth")
+    river.paths.masks_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [{"ds_order": 9, "year": 1999, "window": 1, "water_km2": 2.0, "status": "ok"}]
+    ).to_csv(river.paths.masks_log, index=False)
+    masks.run(mask_project, [river], backend=FakeEE())
+    log = pd.read_csv(river.paths.masks_log)
+    assert list(log.columns) == masks.LOG_COLUMNS
+    assert ((log.ds_order == 9) & (log.year == 1999)).any()  # old rows kept
+
+
+def test_min_chunk_cannot_exceed_chunk(synthetic_project):
+    from rivmapper_v2.config import ConfigError
+
+    cfg = synthetic_project
+    cfg.write_text(
+        cfg.read_text() + "masks:\n  year_start: 2002\n  year_end: 2004\n"
+        "  chunk_px: 512\n  min_chunk_px: 1024\n"
+    )
+    with pytest.raises(ConfigError, match="min_chunk_px"):
+        Project.load(cfg)

@@ -37,6 +37,8 @@ The counts are nested: `n_wet_1 ≤ n_wet_2 ≤ n_wet_3 ≤ n_wet_4 ≤ n_obs`. 
 
 - **Grid:** each reach-year is downloaded on the river's fixed 30 m grid in the analysis CRS ([conventions.md](conventions.md)), using Earth Engine `computePixels` with an explicit pixel grid.
 - **Chunking:** large reaches are fetched in chunks of `chunk_px` × `chunk_px` pixels and assembled locally. Chunks are aligned to the grid, so no merging or resampling is needed.
+- **Adaptive tiling:** Earth Engine's memory use grows with pixels × scenes, so a chunk that is fine in most years can fail on a big reach in a dense year (e.g. 2022–23, when Landsat 8 and 9 overlap on adjacent paths). If a chunk fails with a memory, request-size or time-limit error, it is split into quadrants and retried, recursively, down to `min_chunk_px`. Any other error (authentication, bad geometry) fails straight away. Sub-tiles sit on the same 30 m grid, so the file is identical to a single download. The log's `n_tiles` column records how many requests each reach-year needed.
+- **Per-tile scene selection:** each tile only pulls the Landsat scenes whose footprint touches that tile (plus a 300 m margin), not every scene touching the whole reach. Scenes that miss a tile contribute zero counts there, so results are unchanged; Earth Engine just does less work. `n_scenes` in the log still counts scenes touching the whole reach.
 - **Polygon mask:** pixels whose centre lies outside the reach polygon are set to 255 in every band.
 
 ## Outputs
@@ -61,6 +63,7 @@ The counts are nested: `n_wet_1 ≤ n_wet_2 ≤ n_wet_3 ≤ n_wet_4 ≤ n_obs`. 
 | `year_start`, `year_end` | — (required) | Extraction: calendar years to extract |
 | `reach_start`, `reach_end` | all | Extraction: reach range (`ds_order`) |
 | `chunk_px` | 2048 | Extraction: download chunk size (pixels per side) |
+| `min_chunk_px` | 256 | Extraction: smallest tile a failing chunk is split down to |
 | `dswe_level` | — | Processing: water = DSWE class 1..`dswe_level` |
 | `percentile` | 50 | Processing: per-pixel percentile of the wet/dry series |
 | `min_pixels` | 200 | Processing |

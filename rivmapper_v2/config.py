@@ -178,10 +178,24 @@ class MaskSettings(_Section):
         le=8192,
         description="Download chunk size (pixels per side) for Earth Engine.",
     )
+    min_chunk_px: int = Field(
+        256,
+        ge=32,
+        le=8192,
+        description=(
+            "Smallest tile (pixels per side) a chunk is split down to when "
+            "Earth Engine runs out of memory or time on it."
+        ),
+    )
     min_pixels: int = Field(200, ge=0)
 
     @model_validator(mode="after")
     def _ranges_ordered(self) -> MaskSettings:
+        if self.min_chunk_px > self.chunk_px:
+            raise ValueError(
+                f"masks.min_chunk_px ({self.min_chunk_px}) must not exceed "
+                f"masks.chunk_px ({self.chunk_px})"
+            )
         if self.year_start and self.year_end and self.year_start > self.year_end:
             raise ValueError(
                 f"year_start ({self.year_start}) is after year_end ({self.year_end})"

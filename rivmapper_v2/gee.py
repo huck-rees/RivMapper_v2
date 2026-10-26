@@ -246,7 +246,17 @@ def dswe_counts(geometry, year: int):
             .unmask(0)
         )
 
-    counts = col.map(_per_scene).sum().min(COUNT_MAX).toUint8().rename(COUNT_BANDS)
+    # A zero image keeps the sum well-defined (five bands) even when no scene
+    # touches ``geometry``; it adds nothing to the counts.
+    zero = ee.Image.constant([0] * len(COUNT_BANDS)).rename(COUNT_BANDS).toUint8()
+    counts = (
+        col.map(_per_scene)
+        .merge(ee.ImageCollection([zero]))
+        .sum()
+        .min(COUNT_MAX)
+        .toUint8()
+        .rename(COUNT_BANDS)
+    )
     return counts, col.size()
 
 
@@ -263,6 +273,15 @@ class Grid:
     res: float
     width: int
     height: int
+
+    def bounds(self) -> tuple[float, float, float, float]:
+        """(minx, miny, maxx, maxy) in ``crs`` units."""
+        return (
+            self.x0,
+            self.y0 - self.height * self.res,
+            self.x0 + self.width * self.res,
+            self.y0,
+        )
 
     def pixel_grid(self) -> dict:
         g = {
@@ -294,6 +313,18 @@ def compute_pixels(image, grid: Grid, bands: list[str]) -> dict[str, np.ndarray]
         }
     )
     return {b: np.asarray(arr[b]) for b in bands}
+
+
+def grid_geometry(grid: Grid, margin_m: float = 300.0) -> Any:
+    """The footprint of ``grid`` (plus ``margin_m``) as an ee.Geometry in the
+    grid's own CRS. Used to select only the scenes that touch one tile."""
+    ee = _ee()
+    minx, miny, maxx, maxy = grid.bounds()
+    return ee.Geometry.Rectangle(
+        [minx - margin_m, miny - margin_m, maxx + margin_m, maxy + margin_m],
+        ee.Projection(grid.crs),
+        False,
+    )
 
 
 def ee_geometry(geom_lonlat) -> Any:

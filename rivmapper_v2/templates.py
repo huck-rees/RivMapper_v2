@@ -104,6 +104,7 @@ masks:
   reach_start: {_v(m["reach_start"])}         # null = first reach
   reach_end: {_v(m["reach_end"])}           # null = last reach
   chunk_px: {_v(m["chunk_px"])}           # download chunk size (pixels per side)
+  min_chunk_px: {_v(m["min_chunk_px"])}        # chunks that hit EE memory/time limits are split down to this
   # Used later by mask processing (not by extraction):
   dswe_level: {_v(m["dswe_level"])}          # water = DSWE class 1..dswe_level (1-4)
   percentile: {_v(m["percentile"])}          # per-pixel percentile of per-scene water (50 = median)

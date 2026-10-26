@@ -20,6 +20,13 @@ Outputs: ``{data_root}/{river}/masks/raw/{river}_r{NNN}_{year}.tif`` plus
 record. Existing files made with the same settings are skipped, so an
 interrupted run resumes where it stopped.
 
+Downloads are tiled in ``chunk_px`` squares. A tile that Earth Engine
+cannot compute (memory or time limit — typically a large reach in a year
+with many overlapping Landsat 8 + 9 scenes) is split into quadrants and
+retried, down to ``min_chunk_px``. Tiles sit on the same 30 m grid, so the
+result is identical to a single download. Each tile only pulls the scenes
+that touch it.
+
 Earth Engine calls go through an ``EEBackend`` so everything else here can
 be tested offline with a fake backend.
 """
@@ -45,6 +52,17 @@ log = logging.getLogger(__name__)
 
 STEP = "extract_masks"
 RES = 30.0
+LOG_COLUMNS = [
+    "ds_order",
+    "year",
+    "status",
+    "n_scenes",
+    "n_tiles",
+    "clear_fraction",
+    "n_obs_median",
+    "n_obs_p10",
+    "reason",
+]
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -93,6 +111,92 @@ def chunks(grid: Grid, size: int):
             )
 
 
+def split_quadrants(grid: Grid):
+    """Split ``grid`` into up to four sub-grids (halving each side > 1 px).
+
+    Yields (row_offset, col_offset, sub_grid).
+    """
+    rows = [(0, grid.height)]
+    cols = [(0, grid.width)]
+    if grid.height > 1:
+        h = math.ceil(grid.height / 2)
+        rows = [(0, h), (h, grid.height - h)]
+    if grid.width > 1:
+        w = math.ceil(grid.width / 2)
+        cols = [(0, w), (w, grid.width - w)]
+    for r, nh in rows:
+        for c, nw in cols:
+            yield (
+                r,
+                c,
+                Grid(
+                    grid.crs,
+                    grid.x0 + c * grid.res,
+                    grid.y0 - r * grid.res,
+                    grid.res,
+                    nw,
+                    nh,
+                ),
+            )
+
+
+# Earth Engine error messages that mean "this request was too big", which
+# smaller tiles can fix (anything else — auth, bad geometry — is re-raised).
+_RESOURCE_ERRORS = (
+    "memory limit",
+    "out of memory",
+    "too large",
+    "too many pixels",
+    "request size",
+    "exceeds",
+    "timed out",
+    "timeout",
+    "deadline",
+)
+
+
+def is_resource_error(exc: BaseException) -> bool:
+    """True if ``exc`` is an Earth Engine memory/size/time-limit error."""
+    msg = str(exc).lower()
+    return any(m in msg for m in _RESOURCE_ERRORS)
+
+
+def fetch_adaptive(
+    backend: EEBackend,
+    comp,
+    grid: Grid,
+    min_px: int,
+    stats: dict | None = None,
+) -> dict[str, np.ndarray]:
+    """Fetch ``grid``; on a resource error, split into quadrants and recurse.
+
+    Gives up (re-raises) only when a tile no larger than ``min_px`` on its
+    longest side still fails, or the error is not resource-related.
+    ``stats`` (if given) counts ``tiles`` fetched and ``splits`` made.
+    """
+    stats = stats if stats is not None else {}
+    try:
+        arr = backend.fetch(comp, grid)
+        stats["tiles"] = stats.get("tiles", 0) + 1
+        return arr
+    except Exception as e:  # classified below
+        if not is_resource_error(e) or max(grid.width, grid.height) <= min_px:
+            raise
+        log.debug(
+            "    %d x %d px tile hit an Earth Engine limit (%s); splitting",
+            grid.width,
+            grid.height,
+            str(e)[:80],
+        )
+    stats["splits"] = stats.get("splits", 0) + 1
+    out = {b: np.zeros((grid.height, grid.width), np.uint8) for b in COUNT_BANDS}
+    for r, c, sub in split_quadrants(grid):
+        part = fetch_adaptive(backend, comp, sub, min_px, stats)
+        for b in COUNT_BANDS:
+            out[b][r : r + sub.height, c : c + sub.width] = part[b]
+    return out
+
+
 def rasterize_inside(geom, grid: Grid) -> np.ndarray:
     """Boolean array: pixel centre inside ``geom``."""
     from rasterio.features import geometry_mask
@@ -123,14 +227,19 @@ class EarthEngine:
 
     def counts(self, geom_lonlat, year):
         geom = self.gee.ee_geometry(geom_lonlat)
-        image, size = self.gee.dswe_counts(geom, year)
-        return {"image": image, "size": size}
+        _, size = self.gee.dswe_counts(geom, year)
+        return {"year": year, "size": size}
 
     def n_scenes(self, comp) -> int:
+        """Scenes touching the whole reach polygon (reported in the log)."""
         return int(comp["size"].getInfo())
 
     def fetch(self, comp, grid):
-        return self.gee.compute_pixels(comp["image"], grid, COUNT_BANDS)
+        # Only the scenes that touch this tile: identical counts (other
+        # scenes add zero here) for much less Earth Engine work.
+        tile = self.gee.grid_geometry(grid)
+        image, _ = self.gee.dswe_counts(tile, comp["year"])
+        return self.gee.compute_pixels(image, grid, COUNT_BANDS)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -218,9 +327,10 @@ def extract_reach_year(
     n_scenes = backend.n_scenes(comp)
     shape = (grid.height, grid.width)
     bands = {b: np.zeros(shape, dtype=np.uint8) for b in COUNT_BANDS}
+    stats: dict = {}
     if n_scenes > 0:
         for r, c, sub in chunks(grid, river.masks.chunk_px):
-            arr = backend.fetch(comp, sub)
+            arr = fetch_adaptive(backend, comp, sub, river.masks.min_chunk_px, stats)
             for b in COUNT_BANDS:
                 bands[b][r : r + sub.height, c : c + sub.width] = arr[b]
     inside = rasterize_inside(reach.geometry, grid)
@@ -245,6 +355,7 @@ def extract_reach_year(
         "ds_order": int(reach["ds_order"]),
         "year": year,
         "n_scenes": n_scenes,
+        "n_tiles": stats.get("tiles", 0),
         "clear_fraction": round(float((n_obs > 0).sum() / n_in), 4),
         "n_obs_median": float(np.median(n_obs)) if n_obs.size else 0.0,
         "n_obs_p10": float(np.percentile(n_obs, 10)) if n_obs.size else 0.0,
@@ -356,14 +467,15 @@ def extract_masks(
         )
 
     log_path = p.masks_log
-    new = pd.DataFrame(rows)
+    new = pd.DataFrame(rows, columns=LOG_COLUMNS)
     if log_path.exists() and not new.empty:
-        old = pd.read_csv(log_path)
+        # Columns from older versions of this step are dropped.
+        old = pd.read_csv(log_path).reindex(columns=LOG_COLUMNS)
         keys = set(zip(new["ds_order"], new["year"]))
         old = old[[k not in keys for k in zip(old["ds_order"], old["year"])]]
         new = pd.concat([old, new], ignore_index=True)
     elif log_path.exists():
-        new = pd.read_csv(log_path)
+        new = pd.read_csv(log_path).reindex(columns=LOG_COLUMNS)
     if not new.empty:
         new.sort_values(["ds_order", "year"]).to_csv(log_path, index=False)
 
