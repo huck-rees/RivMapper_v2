@@ -63,7 +63,7 @@ class FakeEE:
     """10 clear scenes per year (none in 2003); water in a horizontal band.
 
     In the band: wet in 6 (class 1), 8 (1-2), 9 (1-3), 9 (1-4) of 10 scenes.
-    Screening: scene 7 of each year is hazy (5% false water on reference-dry
+    Screening: scene 7 of each year is hazy (8% DSWE 1-2 false water on reference-dry
     pixels); the others are clean. Counts ignore which scenes are kept.
     """
 
@@ -89,8 +89,8 @@ class FakeEE:
                 "time_ms": 1e12 + k * 86400e3,
                 "clear_frac": 0.9,
                 "ref_px": 1000,
-                "ref_wet2_px": 30 if k == 7 else 2,
-                "ref_wet3_px": 50 if k == 7 else 5,
+                "ref_wet2_px": 80 if k == 7 else 2,
+                "ref_wet3_px": 100 if k == 7 else 30,
             }
             for k in range(10)
         ]
@@ -191,7 +191,7 @@ def test_extract_counts_with_fake_backend(mask_project):
     assert len(man) == 2 * 2 * 10  # 2 reaches x 2 imaged years x 10 scenes
     assert (man.groupby(["ds_order", "year"]).kept.sum() == 9).all()
     hazy = man[~man.kept.astype(bool)]
-    assert (hazy.reason == "false_water").all() and (hazy.false_rate3 == 0.05).all()
+    assert hazy.reason.str.startswith("false_water").all()
     assert man.date.str.match(r"\d{4}-\d{2}-\d{2}").all()
 
     # Second run: everything already there.
@@ -387,20 +387,44 @@ def test_screen_rule():
     from rivmapper_v2.config import MaskSettings
     from rivmapper_v2.masks import screen
 
-    m = MaskSettings(max_false_water=0.02, min_ref_px=100)
+    m = (
+        MaskSettings()
+    )  # 0.05 DSWE 1-2 / 0.20 DSWE 1-3 at >= 500 px; gross 0.25 at >= 100
     rows = screen(
         [
-            {"scene_id": "a", "ref_px": 1000, "ref_wet2_px": 1, "ref_wet3_px": 10},
-            {"scene_id": "b", "ref_px": 1000, "ref_wet2_px": 5, "ref_wet3_px": 30},
-            {"scene_id": "c", "ref_px": 50, "ref_wet2_px": 50, "ref_wet3_px": 50},
-            {"scene_id": "d", "ref_px": 0, "ref_wet2_px": 0, "ref_wet3_px": 0},
+            # clean, but persistent class 3 on wet ground: kept
+            {"scene_id": "a", "ref_px": 1000, "ref_wet2_px": 5, "ref_wet3_px": 80},
+            # blocky DSWE 1-2 artefact
+            {"scene_id": "b", "ref_px": 1000, "ref_wet2_px": 60, "ref_wet3_px": 90},
+            # class-3-only artefact
+            {"scene_id": "c", "ref_px": 1000, "ref_wet2_px": 10, "ref_wet3_px": 300},
+            # small sample, gross artefact
+            {"scene_id": "d", "ref_px": 200, "ref_wet2_px": 120, "ref_wet3_px": 120},
+            # small sample, moderate: kept unjudged
+            {"scene_id": "e", "ref_px": 200, "ref_wet2_px": 20, "ref_wet3_px": 40},
+            # too small to judge at all
+            {"scene_id": "f", "ref_px": 50, "ref_wet2_px": 50, "ref_wet3_px": 50},
+            {"scene_id": "g", "ref_px": 0, "ref_wet2_px": 0, "ref_wet3_px": 0},
         ],
         m,
     )
-    assert [r["kept"] for r in rows] == [True, False, True, True]
-    assert rows[1]["reason"] == "false_water" and rows[1]["false_rate3"] == 0.03
-    assert rows[2]["reason"] == rows[3]["reason"] == "too_few_reference_px"
-    assert rows[3]["false_rate3"] is None
+    kept = {r["scene_id"]: (r["kept"], r["reason"]) for r in rows}
+    assert kept["a"] == (True, "")
+    assert kept["b"] == (False, "false_water_dswe12")
+    assert kept["c"] == (False, "false_water_dswe123")
+    assert kept["d"] == (False, "false_water_gross")
+    assert kept["e"] == kept["f"] == kept["g"] == (True, "too_few_reference_px")
+    assert rows[1]["false_rate2"] == 0.06 and rows[6]["false_rate3"] is None
+
+
+def test_old_max_false_water_setting_is_retired(synthetic_project, caplog):
+    cfg = synthetic_project
+    cfg.write_text(
+        cfg.read_text() + "masks:\n  year_start: 2002\n  year_end: 2002\n"
+        "  max_false_water: 0.02\n"
+    )
+    Project.load(cfg)
+    assert "max_false_water2" in caplog.text
 
 
 def test_reference_zone_falls_back_to_half_distance():

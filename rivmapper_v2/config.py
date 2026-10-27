@@ -193,13 +193,22 @@ class MaskSettings(_Section):
     screen_scenes: bool = Field(
         True, description="Drop scenes with widespread false water before counting."
     )
-    max_false_water: float = Field(
-        0.02,
+    max_false_water2: float = Field(
+        0.05,
         gt=0,
-        lt=1,
+        le=1,
         description=(
-            "A scene is dropped when more than this share of its clear "
-            "reference-dry pixels is classed DSWE 1-3."
+            "Drop a scene when more than this share of its clear reference-dry "
+            "pixels is DSWE 1-2 (the blocky haze/cloud artefacts)."
+        ),
+    )
+    max_false_water3: float = Field(
+        0.20,
+        gt=0,
+        le=1,
+        description=(
+            "... or more than this share is DSWE 1-3 (class-3-only artefacts; "
+            "set well above the persistent DSWE 3 of wet ground)."
         ),
     )
     ref_dry_widths: float = Field(
@@ -211,7 +220,21 @@ class MaskSettings(_Section):
         ),
     )
     min_ref_px: int = Field(
-        500, ge=1, description="Scenes with fewer clear reference pixels are kept."
+        500,
+        ge=1,
+        description="Clear reference pixels needed to judge a scene by the rates above.",
+    )
+    gross_false_water2: float = Field(
+        0.25,
+        gt=0,
+        le=1,
+        description=(
+            "Scenes with fewer reference pixels are still dropped above this "
+            "DSWE 1-2 share (gross artefacts) ..."
+        ),
+    )
+    gross_min_ref_px: int = Field(
+        100, ge=1, description="... if they have at least this many reference pixels."
     )
     screen_scale_m: float = Field(60.0, ge=30, description="Scale for screening stats.")
     le07_gap_years: list[int] = Field(
@@ -460,6 +483,9 @@ RETIRED_SETTINGS: dict[tuple[str, str], str] = {
     ("masks", "composite_windows"): "raw masks are single-year DSWE counts",
     ("masks", "min_clear_fraction"): "raw masks are single-year DSWE counts",
     ("masks", "min_water_fraction"): "raw masks are single-year DSWE counts",
+    ("masks", "max_false_water"): (
+        "replaced by max_false_water2 (DSWE 1-2) and max_false_water3 (DSWE 1-3)"
+    ),
 }
 
 RIVER_ID_COLUMNS = (

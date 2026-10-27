@@ -20,7 +20,8 @@ Bands (uint8; 255 = outside the reach polygon):
 reach-year is checked on *reference-dry* pixels: inside the reach polygon,
 at least ``ref_dry_widths`` channel widths from the reach line, and never
 water in JRC Global Surface Water. A scene that classes more than
-``max_false_water`` of its clear reference-dry pixels as DSWE 1–3 (haze,
+``max_false_water2`` of its clear reference-dry pixels as DSWE 1–2, or more
+than ``max_false_water3`` as DSWE 1–3 (haze,
 smoke, thin cloud missed by QA_PIXEL, sensor artefacts) is dropped. Every
 scene, kept or dropped, is listed in the scene manifest.
 
@@ -293,9 +294,17 @@ def reference_zone(polygon, line, width_m: float, widths: float, min_area_m2: fl
 def screen(rows: list[dict], m) -> list[dict]:
     """Decide which scenes to keep. Adds rates, ``kept`` and ``reason``.
 
-    A scene is dropped when its clear reference-dry pixels number at least
-    ``min_ref_px`` and more than ``max_false_water`` of them are DSWE 1–3.
+    A scene is dropped when it has at least ``min_ref_px`` clear
+    reference-dry pixels and more than ``max_false_water2`` of them are DSWE
+    1–2 or more than ``max_false_water3`` are DSWE 1–3; or, with at least
+    ``gross_min_ref_px``, more than ``gross_false_water2`` are DSWE 1–2.
     Scenes with too few reference pixels to judge are kept.
+
+    Why two rates (Ok Tedi analysis, Oct 2026): DSWE 1–2 false water is
+    bimodal — most scenes have none, artefact scenes have a lot — so a low
+    cut separates them cleanly. DSWE 3 ("potential wetland") recurs on wet
+    ground in the same pixels every year, so a low DSWE 1–3 cut drops
+    ordinary scenes; only gross class-3 artefacts are cut there.
     """
     out = []
     for r in rows:
@@ -307,10 +316,15 @@ def screen(rows: list[dict], m) -> list[dict]:
         r["false_rate3"] = (
             round(float(r.get("ref_wet3_px") or 0) / ref, 5) if ref else None
         )
-        if ref < m.min_ref_px:
+        r2, r3 = r["false_rate2"], r["false_rate3"]
+        if ref >= m.min_ref_px and r2 > m.max_false_water2:
+            r["kept"], r["reason"] = False, "false_water_dswe12"
+        elif ref >= m.min_ref_px and r3 > m.max_false_water3:
+            r["kept"], r["reason"] = False, "false_water_dswe123"
+        elif ref >= m.gross_min_ref_px and r2 > m.gross_false_water2:
+            r["kept"], r["reason"] = False, "false_water_gross"
+        elif ref < m.min_ref_px:
             r["kept"], r["reason"] = True, "too_few_reference_px"
-        elif r["false_rate3"] > m.max_false_water:
-            r["kept"], r["reason"] = False, "false_water"
         else:
             r["kept"], r["reason"] = True, ""
         out.append(r)
@@ -431,9 +445,11 @@ def _fingerprint(river: River, crs: str) -> dict:
                 "reference": "JRC GSW 1.4 max_extent = 0, >= ref_dry_widths W "
                 "from the reach line",
                 "ref_dry_widths": m.ref_dry_widths,
-                "false_water_classes": "DSWE 1-3",
-                "max_false_water": m.max_false_water,
+                "max_false_water2": m.max_false_water2,
+                "max_false_water3": m.max_false_water3,
                 "min_ref_px": m.min_ref_px,
+                "gross_false_water2": m.gross_false_water2,
+                "gross_min_ref_px": m.gross_min_ref_px,
                 "scale_m": m.screen_scale_m,
             }
             if m.screen_scenes

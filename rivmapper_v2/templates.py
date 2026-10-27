@@ -119,9 +119,12 @@ masks:
   # Scene screening (raw product v2): scenes with widespread false water on
   # reference-dry pixels (far from the channel, never water in JRC GSW) are dropped.
   screen_scenes: {_v(m["screen_scenes"])}
-  max_false_water: {_v(m["max_false_water"])}     # drop a scene above this share of DSWE 1-3 on reference-dry pixels
+  max_false_water2: {_v(m["max_false_water2"])}    # drop a scene above this share of DSWE 1-2 on reference-dry pixels
+  max_false_water3: {_v(m["max_false_water3"])}     # ... or above this share of DSWE 1-3
   ref_dry_widths: {_v(m["ref_dry_widths"])}       # reference-dry pixels are at least this many channel widths from the reach line
-  min_ref_px: {_v(m["min_ref_px"])}           # scenes with fewer clear reference pixels are kept unjudged
+  min_ref_px: {_v(m["min_ref_px"])}           # clear reference pixels needed to judge by the two rates
+  gross_false_water2: {_v(m["gross_false_water2"])}   # with fewer, still drop above this DSWE 1-2 share ...
+  gross_min_ref_px: {_v(m["gross_min_ref_px"])}      # ... given at least this many reference pixels
   screen_scale_m: {_v(m["screen_scale_m"])}       # scale of the screening statistics (m)
   le07_gap_years: {_v(m["le07_gap_years"])}     # years in which SLC-off Landsat 7 is also used
   screen_only: {_v(m["screen_only"])}         # true = write the scene manifest only (quick check, no downloads)
