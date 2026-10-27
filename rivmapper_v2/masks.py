@@ -184,6 +184,48 @@ _RESOURCE_ERRORS = (
 )
 
 
+# Errors that mean "slow down": Earth Engine's per-project limits on
+# concurrent requests and aggregations. Waiting and retrying fixes them.
+_RATE_ERRORS = (
+    "too many concurrent",
+    "too many requests",
+    "429",
+    "rate limit",
+    "quota",
+)
+RATE_WAITS_S = (15, 30, 60, 120, 240)
+
+
+def is_rate_error(exc: BaseException) -> bool:
+    """True if ``exc`` is an Earth Engine rate/concurrency-limit error."""
+    msg = str(exc).lower()
+    return any(m in msg for m in _RATE_ERRORS)
+
+
+def with_rate_retry(fn, *args, waits=RATE_WAITS_S, sleep=None, **kwargs):
+    """Call ``fn``; on a rate-limit error wait and retry (``waits`` seconds,
+    with ±25% jitter so parallel workers do not retry in step)."""
+    import random
+    import time
+
+    sleep = sleep or time.sleep
+    for i, w in enumerate((*waits, None)):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            if w is None or not is_rate_error(e):
+                raise
+            log.info(
+                "    Earth Engine busy (%s); retry %d/%d in %.0f s",
+                str(e)[:60],
+                i + 1,
+                len(waits),
+                w,
+            )
+            sleep(w * random.uniform(0.75, 1.25))
+    return None  # unreachable
+
+
 def is_resource_error(exc: BaseException) -> bool:
     """True if ``exc`` is an Earth Engine memory/size/time-limit error."""
     msg = str(exc).lower()
@@ -344,10 +386,11 @@ class EarthEngine:
 
     def n_scenes(self, comp) -> int:
         """Scenes touching the whole reach polygon (reported in the log)."""
-        return int(comp["size"].getInfo())
+        return int(with_rate_retry(comp["size"].getInfo))
 
     def scenes(self, comp, ref_lonlat, scale_m=60.0):
-        return self.gee.scene_stats(
+        return with_rate_retry(
+            self.gee.scene_stats,
             comp["geom"],
             self.gee.ee_geometry(ref_lonlat),
             comp["year"],
@@ -366,7 +409,7 @@ class EarthEngine:
             le07_slc_off=comp["le07"],
             bands=COUNT_BANDS_V2,
         )
-        return self.gee.compute_pixels(image, grid, COUNT_BANDS_V2)
+        return with_rate_retry(self.gee.compute_pixels, image, grid, COUNT_BANDS_V2)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -814,11 +857,19 @@ def _screen_only(river: River, backend, reaches, years) -> StepResult:
         else reaches.crs.to_wkt()
     )
     origin = river_origin(tuple(reaches.total_bounds))
+    done = set()
+    if p.scene_manifest.exists() and not river.overwrite:
+        # resume: reach-years already in the manifest are not asked again
+        prev = pd.read_csv(p.scene_manifest, usecols=["ds_order", "year"])
+        done = set(zip(prev["ds_order"].astype(int), prev["year"].astype(int)))
     tasks = [
         (reach, y, p.raw_mask(int(reach["ds_order"]), y))
         for _, reach in reaches.iterrows()
         for y in years
+        if (int(reach["ds_order"]), y) not in done
     ]
+    if done:
+        log.info("  %d reach-years already screened; screening the rest", len(done))
     rows = _run_tasks(river, backend, tasks, origin, crs, None, zones)
     df = _tidy_manifest(p.scene_manifest)
     n = 0 if df is None else len(df)

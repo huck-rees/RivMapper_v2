@@ -39,7 +39,7 @@ For each river (reach polygons from the `reaches` step must exist):
    - One row per reach-year goes to `{river}_extract_masks_log.csv`.
    - A run record, `{river}_extract_masks_run.yaml`, stores the parameters, analysis CRS, grid origin, package versions and status counts.
 
-Reach-years are requested `workers` at a time (default 4): Earth Engine calls are network-bound, so a few in parallel cut the wall time roughly in proportion.
+Reach-years are requested `workers` at a time (default 2): Earth Engine calls are network-bound, so a couple in parallel cut the wall time. When Earth Engine answers that the project has too many concurrent requests or aggregations (HTTP 429), the request waits and is retried (15 s, 30 s, 1, 2 and 4 min, with jitter) before the reach-year is logged as failed.
 
 The step is **resumable**. On re-run, any reach-year file whose stored fingerprint matches the current settings is skipped without contacting Earth Engine, so an interrupted or partly failed run only fetches what is missing.
 
@@ -84,8 +84,8 @@ The full code lists are in `gee.dswe()`.
 - **Reference-dry pixels:** inside the reach polygon, at least `ref_dry_widths` channel widths (default 10 W, from `width_ref`) from the reach line, and never water in JRC Global Surface Water 1984–2021 (`max_extent` = 0; Pekel et al., 2016). Where the valley is too narrow for that, half the distance is used. Where even that leaves too little area, the reach is not screened and the log says so.
 - **False-water rate** = share of the scene's clear reference-dry pixels classed DSWE 1–3. The DSWE 1–2 rate is also recorded.
 - **Rule:** a scene is dropped when its rate exceeds `max_false_water` (default 0.02) and it has at least `min_ref_px` (default 500) clear reference pixels. Scenes with fewer are kept and marked `too_few_reference_px`.
-- **Cost:** the statistics are computed once per reach-year, for all its scenes in one Earth Engine request, at `screen_scale_m` (default 60 m; a rate does not need full resolution).
-- **Quick look:** `screen_only: true` writes the scene manifest without downloading anything. Use it to check the rate distribution, and the share of scenes that would be dropped, before a full extraction.
+- **Cost:** all scenes of a reach-year are stacked into one multi-band image and reduced once over the reach and once over the reference zone: one Earth Engine request and two aggregations per reach-year, at `screen_scale_m` (default 60 m; a rate does not need full resolution).
+- **Quick look:** `screen_only: true` writes the scene manifest without downloading anything. Use it to check the rate distribution, and the share of scenes that would be dropped, before a full extraction. It resumes: reach-years already in the manifest are not asked again (`--overwrite` to redo them).
 
 ## Annual counts (the raw product)
 
@@ -181,7 +181,7 @@ About 15–45 scenes touch a reach each year, but persistent cloud leaves a typi
 | `reach_start`, `reach_end` | all | Extraction: reach range (`ds_order`) |
 | `chunk_px` | 2048 | Extraction: download chunk size (pixels per side) |
 | `min_chunk_px` | 256 | Extraction: smallest tile a failing chunk is split down to |
-| `workers` | 4 | Extraction: reach-years requested in parallel |
+| `workers` | 2 | Extraction: reach-years requested in parallel |
 | `screen_scenes` | true | Extraction: screen scenes for false water |
 | `max_false_water` | 0.02 | Screening: drop a scene above this DSWE 1–3 rate on reference-dry pixels |
 | `ref_dry_widths` | 10 | Screening: reference-dry pixels at least this many W from the reach line |

@@ -222,7 +222,7 @@ class MaskSettings(_Section):
         ),
     )
     workers: int = Field(
-        4,
+        2,
         ge=1,
         le=16,
         description="Reach-years requested from Earth Engine in parallel.",

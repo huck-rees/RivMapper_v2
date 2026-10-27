@@ -304,7 +304,7 @@ def scene_stats(
     le07_slc_off: bool = False,
     scale_m: float = 60.0,
 ) -> list[dict]:
-    """Per-scene screening statistics for one reach-year (one EE call).
+    """Per-scene screening statistics for one reach-year (one EE request).
 
     For every scene touching ``geometry`` in ``year``:
 
@@ -315,7 +315,11 @@ def scene_stats(
     * ``ref_wet2_px`` / ``ref_wet3_px``: of those, classified DSWE 1–2 /
       1–3, i.e. false water.
 
-    Counted at ``scale_m`` (a rate, so a coarser scale is fine and cheaper).
+    All scenes are stacked into one multi-band image and reduced once over
+    the reach and once over the reference zone, so the request costs two
+    aggregations however many scenes there are (Earth Engine limits
+    concurrent aggregations per project). Counted at ``scale_m`` (a rate,
+    so a coarser scale is fine and cheaper).
     """
     ee = _ee()
     col = landsat_collection(
@@ -323,44 +327,71 @@ def scene_stats(
     )
     ref_dry = ee.Image(JRC_GSW).select("max_extent").unmask(0).eq(0)
 
-    def _stats(img):
+    def _layers(img):
         d = dswe(img)
-        clear = d.gte(0).unmask(0).rename("clear")
-        ref = (
-            ee.Image.cat(d.gte(0), d.gte(1).And(d.lte(2)), d.gte(1).And(d.lte(3)))
-            .rename(["ref", "wet2", "wet3"])
-            .updateMask(ref_dry)
-        )
-        c = clear.reduceRegion(
-            ee.Reducer.mean(), geometry, scale_m, maxPixels=1e10, tileScale=4
-        )
-        r = ref.reduceRegion(
-            ee.Reducer.sum(), ref_geometry, scale_m, maxPixels=1e10, tileScale=4
-        )
-
-        def nz(v):  # an all-masked region reduces to null; report 0
-            return ee.Algorithms.If(ee.Algorithms.IsEqual(v, None), 0, v)
-
-        return ee.Feature(
-            None,
-            {
-                "scene_id": img.get("scene_id"),
-                "sensor": img.get("sensor"),
-                "time_ms": img.get("system:time_start"),
-                "clear_frac": nz(c.get("clear")),
-                "ref_px": nz(r.get("ref")),
-                "ref_wet2_px": nz(r.get("wet2")),
-                "ref_wet3_px": nz(r.get("wet3")),
-            },
+        clear = d.gte(0).unmask(0)
+        wet2 = d.gte(1).And(d.lte(2)).unmask(0)
+        wet3 = d.gte(1).And(d.lte(3)).unmask(0)
+        return (
+            ee.Image.cat(
+                clear,
+                clear.multiply(ref_dry),
+                wet2.multiply(ref_dry),
+                wet3.multiply(ref_dry),
+            )
+            .rename(["clear", "ref", "wet2", "wet3"])
+            .toFloat()
         )
 
-    rows = (
-        ee.FeatureCollection(col.map(_stats))
-        .reduceColumns(ee.Reducer.toList(len(SCENE_FIELDS)), SCENE_FIELDS)
-        .get("list")
-        .getInfo()
+    n = col.size()
+    layers = col.map(_layers)
+    stack = layers.toBands()  # bands "{system:index}_{layer}"
+    keys = layers.aggregate_array("system:index")
+    clear_bands = keys.map(lambda k: ee.String(k).cat("_clear"))
+    ref_bands = keys.map(
+        lambda k: ee.List(["_ref", "_wet2", "_wet3"]).map(lambda s: ee.String(k).cat(s))
+    ).flatten()
+    out = ee.Dictionary(
+        {
+            "n": n,
+            "keys": keys,
+            "ids": col.aggregate_array("scene_id"),
+            "sensor": col.aggregate_array("sensor"),
+            "time": col.aggregate_array("system:time_start"),
+            "clear": stack.select(clear_bands).reduceRegion(
+                ee.Reducer.mean(), geometry, scale_m, maxPixels=1e10, tileScale=4
+            ),
+            "ref": stack.select(ref_bands).reduceRegion(
+                ee.Reducer.sum(), ref_geometry, scale_m, maxPixels=1e10, tileScale=4
+            ),
+        }
     )
-    return [dict(zip(SCENE_FIELDS, r, strict=True)) for r in rows or []]
+    # toBands() on an empty collection fails; ask only when there are scenes
+    info = ee.Algorithms.If(n.gt(0), out, ee.Dictionary({"n": 0})).getInfo()
+    return scene_rows(info)
+
+
+def scene_rows(info: dict) -> list[dict]:
+    """Turn the ``scene_stats`` response into one dict per scene."""
+    rows = []
+    if not info or not info.get("n"):
+        return rows
+    clear, ref = info.get("clear") or {}, info.get("ref") or {}
+    for k, sid, sensor, t in zip(
+        info["keys"], info["ids"], info["sensor"], info["time"], strict=True
+    ):
+        rows.append(
+            {
+                "scene_id": sid,
+                "sensor": sensor,
+                "time_ms": t,
+                "clear_frac": clear.get(f"{k}_clear") or 0.0,
+                "ref_px": ref.get(f"{k}_ref") or 0.0,
+                "ref_wet2_px": ref.get(f"{k}_wet2") or 0.0,
+                "ref_wet3_px": ref.get(f"{k}_wet3") or 0.0,
+            }
+        )
+    return rows
 
 
 # ─────────────────────────────────────────────────────────────────────

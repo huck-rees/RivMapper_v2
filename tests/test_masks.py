@@ -435,9 +435,11 @@ def test_screen_only_writes_manifest_not_masks(mask_project):
     assert fake.fetched_ids == []
     man = pd.read_csv(river.paths.scene_manifest)
     assert len(man) == 40 and (~man.kept.astype(bool)).sum() == 4
-    # running it again does not duplicate rows
-    masks.run(mask_project, [river], backend=FakeEE())
+    # running it again resumes: nothing asked again, no duplicate rows
+    again = FakeEE()
+    masks.run(mask_project, [river], backend=again)
     assert len(pd.read_csv(river.paths.scene_manifest)) == 40
+    assert again.screened == []
 
 
 def test_le07_gap_years_reach_the_backend(mask_project):
@@ -471,3 +473,28 @@ def test_raw_v1_files_are_stale_for_v2(mask_project):
     river.paths.raw_mask(1, 2002).unlink()
     [res] = masks.run(mask_project, [river], backend=FakeEE())
     assert res.status == "stale" and "--overwrite" in res.message
+
+
+def test_rate_limit_errors_are_retried():
+    from rivmapper_v2.masks import is_rate_error, with_rate_retry
+
+    assert is_rate_error(RuntimeError("Too many concurrent aggregations."))
+    assert not is_rate_error(RuntimeError("User memory limit exceeded."))
+    calls, waited = [], []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("Too many concurrent aggregations.")
+        return "ok"
+
+    assert with_rate_retry(flaky, waits=(1, 2, 4), sleep=waited.append) == "ok"
+    assert len(calls) == 3 and len(waited) == 2
+    with pytest.raises(RuntimeError, match="concurrent"):
+        with_rate_retry(
+            lambda: (_ for _ in ()).throw(RuntimeError("Too many concurrent x")),
+            waits=(1,),
+            sleep=waited.append,
+        )
+    with pytest.raises(ValueError):  # other errors are not retried
+        with_rate_retry(lambda: (_ for _ in ()).throw(ValueError("bad")), sleep=print)
