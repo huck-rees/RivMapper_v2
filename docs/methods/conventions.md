@@ -17,7 +17,8 @@ Each river has **one projected analysis CRS**. Every product used for measuremen
 | Reach lines, reach polygons, valley line | `{river}/reaches/` | River analysis CRS | ✅ |
 | Raw masks (GEE export) | `{river}/masks/raw/` | River analysis CRS, on the river's fixed 30 m grid | ✅ |
 | Processed masks | `{river}/masks/processed/` | River analysis CRS, same grid as raw | ✅ |
-| HMM probability cache | `{river}/masks/model/` | River analysis CRS, same grid as raw | ✅ |
+| HMM probability cache, window context | `{river}/masks/model/` | River analysis CRS, same grid as raw | ✅ |
+| Decision rasters | `{river}/masks/diagnostics/` | River analysis CRS, same grid as raw | ✅ |
 | Channel belt (Nyberg et al., 2023, or mapped by hand), JRC occurrence | inputs | Reprojected into the river analysis CRS before any intersection or area calculation | 🔜 |
 | Summary tables | CSV / YAML | No CRS; lengths in m, areas in m² or km², all computed in the analysis CRS | ✅ |
 

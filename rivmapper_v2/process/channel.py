@@ -44,6 +44,21 @@ from ..config import ProcessSettings
 
 EIGHT = np.ones((3, 3), bool)
 
+# Decision codes: why each pixel is (or is not) channel. Written per
+# reach-year to masks/diagnostics/ (see docs/methods/processing.md).
+DECISIONS = {
+    0: "not water: below both probability thresholds",
+    1: "channel: low-flow core",
+    2: "channel: grown into the high-stage envelope",
+    3: "channel: gap closed or bridged",
+    4: "channel: small dry hole filled",
+    10: "dropped: water not connected to the river's through-flow network",
+    11: "dropped: over-wide blob off the reach line",
+    12: "dropped: dead-end branch",
+    13: "dropped: piece too small",
+    14: "dropped: by the stricter rerun of a high-area year",
+}
+
 
 @dataclass
 class ChannelInputs:
@@ -81,6 +96,7 @@ class ChannelResult:
     channel: np.ndarray  # near-bankfull mask
     core: np.ndarray  # low-flow core mask
     stats: dict = field(default_factory=dict)
+    decision: np.ndarray | None = None  # uint8 codes, see DECISIONS
 
 
 def _disk(r: int) -> np.ndarray:
@@ -348,6 +364,7 @@ def extract(
         bridges |= b
         joined += j
     n_bridge_px = int(bridges.sum())
+    joined_px = closed & ~core  # pixels added by closing
     if joined and W >= 2:
         # give bridges the channel's width (a 1-px path would read as a
         # constriction), still only through allowed pixels
@@ -366,15 +383,19 @@ def extract(
     dt = ndi.distance_transform_edt(grown)
     thick = dt > rp
     removed_wide = 0
+    wide_mask = np.zeros_like(grown)
     if thick.any():
         blob = grown & (ndi.distance_transform_edt(~thick) <= rp + 1)
         on_line = ndi.binary_dilation(inp.centerline, EIGHT, iterations=2)
         blob_off = blob & ~_keep_touching(blob, on_line)
         removed_wide = int(blob_off.sum())
+        before = grown
         grown = _keep_touching(grown & ~blob_off, net & ~blob_off)
+        wide_mask = before & ~grown
 
     # 10. dead ends (cutoffs still joined at one end, tributary mouths)
     pruned = 0
+    dead_mask = np.zeros_like(grown)
     if through:
         term = (
             inp.terminals
@@ -384,11 +405,15 @@ def extract(
         max_len = (
             inp.dead_end_px if inp.dead_end_px is not None else s.dead_end_widths * W
         )
+        before = grown
         grown, pruned = prune_dead_ends(grown, term, max_len, W)
+        dead_mask = before & ~grown
 
     # 11. size and holes
-    final = _drop_small(grown, s.min_component_w2 * W * W)
-    final = _fill_small_holes(final, s.fill_hole_w2 * W * W) & inside
+    kept = _drop_small(grown, s.min_component_w2 * W * W)
+    small_mask = grown & ~kept
+    final = _fill_small_holes(kept, s.fill_hole_w2 * W * W) & inside
+    filled = final & ~kept
     core_out = _drop_small(final & core, s.min_component_w2 * W * W)
 
     stats = {
@@ -400,5 +425,21 @@ def extract(
         "dead_ends_removed": pruned,
         "channel_px": int(final.sum()),
         "core_px": int(core_out.sum()),
+        "not_connected_px": 0,
+        "dead_end_px": int(dead_mask.sum()),
+        "small_px": int(small_mask.sum()),
+        "filled_px": int(filled.sum()),
     }
-    return ChannelResult(channel=final, core=core_out, stats=stats)
+    # 12. record each pixel's fate (later codes overwrite earlier ones)
+    d = np.zeros(final.shape, np.uint8)
+    water = (core | env) & inside
+    d[water & ~final] = 10
+    d[wide_mask & ~final] = 11
+    d[dead_mask & ~final] = 12
+    d[small_mask & ~final] = 13
+    d[final] = 2
+    d[final & ((bridges | joined_px) & ~core)] = 3
+    d[core_out] = 1
+    d[filled & ~core] = 4
+    stats["not_connected_px"] = int((d == 10).sum())
+    return ChannelResult(channel=final, core=core_out, stats=stats, decision=d)

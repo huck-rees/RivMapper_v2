@@ -101,7 +101,8 @@ def _parameters(river: River, raw_fp: dict) -> dict:
         "product": PRODUCT,
         "raw_product": raw_fp.get("product"),
         "years": [river.masks.year_start, river.masks.year_end],
-        **river.process.model_dump(mode="json"),
+        # keep_diagnostics changes what is written, not the masks
+        **river.process.model_dump(mode="json", exclude={"keep_diagnostics"}),
     }
 
 
@@ -372,11 +373,13 @@ def _process_window(river, layout, paths, window, years, status, env_thr, lines)
             terminals=term,
         )
 
-    def keep(res):
+    def keep(res, thr):
         return {
             "channel": res.channel[sub] & centre,
             "core": res.core[sub] & centre,
+            "decision": res.decision[sub] if res.decision is not None else None,
             "stats": res.stats,
+            "threshold": thr,
         }
 
     prev = None
@@ -388,7 +391,7 @@ def _process_window(river, layout, paths, window, years, status, env_thr, lines)
             continue
         res = extract(inputs(t, prev), s, env_thr)
         prev_used[y] = prev
-        results[y] = keep(res)
+        results[y] = keep(res, env_thr)
         prev = res.channel
     # Pass 4: year-to-year check on the centre reach. Too much water is
     # rerun once with a stricter envelope threshold (it is usually false
@@ -401,14 +404,93 @@ def _process_window(river, layout, paths, window, years, status, env_thr, lines)
         if scores[i] > s.outlier_mad:
             strict = min(env_thr + STRICT_STEP, 0.95)
             t = years.index(y)
-            res2 = keep(extract(inputs(t, prev_used[y]), s, strict))
+            res2 = keep(extract(inputs(t, prev_used[y]), s, strict), strict)
             a2 = list(area)
             a2[i] = float(res2["channel"].sum())
             sc2 = float(qa.outlier_scores(a2, signed=True)[i])
             results[y]["rerun"] = True
+            results[y]["area_before_rerun_px"] = area[i]
             if abs(sc2) < abs(scores[i]):
+                first = results[y]["channel"]
                 results[y].update(res2, score=sc2)
+                d = results[y]["decision"]
+                if d is not None:
+                    d[first & ~res2["channel"]] = 14
+    if river.process.keep_diagnostics:
+        _write_window_context(
+            paths.window_context(o), window.grid, owner, term, centerline
+        )
     return centre, results
+
+
+def _write_window_context(path, grid, owner, term, centerline) -> None:
+    """Window grid: reach owner (ds_order), terminal zones, rasterised reach line."""
+    import rasterio
+    from rasterio.transform import from_origin
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    bands = [
+        ("owner", "ds_order of the reach owning the pixel (0 = none)", owner),
+        ("terminal", "terminal zone id: where water may enter/leave (0 = none)", term),
+        ("reach_line", "SWORD reach line, rasterised (0/1)", centerline),
+    ]
+    profile = {
+        "driver": "GTiff",
+        "width": grid.width,
+        "height": grid.height,
+        "count": len(bands),
+        "dtype": "uint16",
+        "crs": grid.crs,
+        "transform": from_origin(grid.x0, grid.y0, grid.res, grid.res),
+        "compress": "deflate",
+        "tiled": True,
+        "blockxsize": 256,
+        "blockysize": 256,
+    }
+    tmp = path.with_suffix(".part.tif")
+    with rasterio.open(tmp, "w", **profile) as dst:
+        for i, (name, desc, arr) in enumerate(bands, start=1):
+            dst.write(arr.astype(np.uint16), i)
+            dst.set_band_description(i, f"{name}: {desc}")
+    tmp.replace(path)
+
+
+def _write_diagnostic(path, grid, decision, inside, tags) -> None:
+    """One band of decision codes (``channel.DECISIONS``), 255 outside."""
+    import rasterio
+    from rasterio.transform import from_origin
+
+    from .channel import DECISIONS
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = np.full((grid.height, grid.width), NODATA, np.uint8)
+    if decision is not None:
+        data[inside] = decision[inside]
+    profile = {
+        "driver": "GTiff",
+        "width": grid.width,
+        "height": grid.height,
+        "count": 1,
+        "dtype": "uint8",
+        "crs": grid.crs,
+        "transform": from_origin(grid.x0, grid.y0, grid.res, grid.res),
+        "nodata": NODATA,
+        "compress": "deflate",
+        "tiled": True,
+        "blockxsize": 256,
+        "blockysize": 256,
+    }
+    tmp = path.with_suffix(".part.tif")
+    with rasterio.open(tmp, "w", **profile) as dst:
+        dst.write(data, 1)
+        dst.set_band_description(1, "decision: why each pixel is or is not channel")
+        dst.update_tags(
+            decision_codes=json.dumps({str(k): v for k, v in DECISIONS.items()}),
+            **{
+                k: (v if isinstance(v, str) else json.dumps(v)) for k, v in tags.items()
+            },
+        )
+    tmp.replace(path)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -518,12 +600,21 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
     }
 
     lines = _reach_lines(p)
+    reach_len = (
+        dict(zip(lines["ds_order"].astype(int), lines["reach_len"], strict=True))
+        if "reach_len" in lines.columns
+        else {}
+    )
     rows = []
     thumbs_all = {}
     for window in layout.windows():
         o = window.center
         rows_file = _ckpt(p, f"r{o:03d}_rows", key).with_suffix(".csv")
-        if rows_file.exists() and all(p.processed_mask(o, y).exists() for y in years):
+        if rows_file.exists() and all(
+            p.processed_mask(o, y).exists()
+            and (not s.keep_diagnostics or p.diagnostic(o, y).exists())
+            for y in years
+        ):
             done = pd.read_csv(rows_file, keep_default_na=False, na_values=[""])
             done["flags"] = done["flags"].fillna("").astype(str)
             rows.extend(done.to_dict("records"))
@@ -566,23 +657,25 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
                     core_km2=round(float((co & inside).sum() * px_km2), 4),
                     score=res.get("score"),
                     rerun=bool(res.get("rerun", False)),
-                    **{
-                        k: v
-                        for k, v in res["stats"].items()
-                        if k
-                        in (
-                            "bridges_joined",
-                            "removed_wide_px",
-                            "dead_ends_removed",
-                            "through",
-                        )
-                    },
+                    channel_km2_before_rerun=(
+                        round(res["area_before_rerun_px"] * px_km2, 4)
+                        if "area_before_rerun_px" in res
+                        else np.nan
+                    ),
+                    envelope_threshold=res["threshold"],
+                    **res["stats"],
                 )
                 if y in thumb_years:
                     thumbs[y] = (ch & inside, co & inside, inside)
             else:
                 row.update(channel_km2=np.nan, core_km2=np.nan, score=None, rerun=False)
-            row["mean_width_over_W"] = np.nan
+            # mean width = area / reach length, and relative to width_ref
+            length = reach_len.get(o)
+            if length and np.isfinite(row["channel_km2"]):
+                row["mean_width_m"] = round(row["channel_km2"] * 1e6 / length, 1)
+                row["width_over_W"] = round(row["mean_width_m"] / layout.width_m(o), 3)
+            else:
+                row["mean_width_m"] = row["width_over_W"] = np.nan
             row["flags"] = _flags(row, river, W)
             _write_mask(
                 p.processed_mask(o, y),
@@ -597,6 +690,14 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
                     "flags": row["flags"],
                 },
             )
+            if s.keep_diagnostics:
+                _write_diagnostic(
+                    p.diagnostic(o, y),
+                    g,
+                    res["decision"] if res is not None else None,
+                    inside,
+                    {"river": river.name, "ds_order": str(o), "year": str(y)},
+                )
             rows.append(row)
         thumbs_all[o] = thumbs
         pd.DataFrame([r for r in rows if r["ds_order"] == o]).to_csv(

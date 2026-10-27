@@ -249,6 +249,10 @@ class ProcessSettings(_Section):
     resolvable_px: float = Field(
         3.0, gt=0, description="Reaches narrower than this many pixels are flagged."
     )
+    keep_diagnostics: bool = Field(
+        True,
+        description="Write per-pixel decision rasters and window context files.",
+    )
 
     @model_validator(mode="after")
     def _threshold_range(self) -> ProcessSettings:

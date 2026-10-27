@@ -22,6 +22,8 @@ subfolder per step::
         │   ├── {river}_extract_masks_run.yaml
         │   ├── {river}_scene_manifest.csv       one row per scene (raw v2)
         │   ├── model/{river}_r{NNN}_posterior.tif   cached HMM probabilities
+        │   ├── model/{river}_r{NNN}_window.tif      window context (owner, terminals, reach line)
+        │   ├── diagnostics/{river}_r{NNN}_{year}.tif  per-pixel decision codes
         │   ├── processed/{river}_r{NNN}_{year}.tif  channel masks
         │   ├── qa/{river}_r{NNN}_qa.png         QA figures
         │   ├── {river}_process_masks_qa.csv     one row per reach-year
@@ -127,11 +129,21 @@ class RiverPaths:
         return self.processed_masks_dir / f"{self.river}_r{ds_order:03d}_{year}.tif"
 
     @property
+    def diagnostics_dir(self) -> Path:
+        return self.masks_dir / "diagnostics"
+
+    def diagnostic(self, ds_order: int, year: int) -> Path:
+        return self.diagnostics_dir / f"{self.river}_r{ds_order:03d}_{year}.tif"
+
+    @property
     def model_dir(self) -> Path:
         return self.masks_dir / "model"
 
     def posterior(self, ds_order: int) -> Path:
         return self.model_dir / f"{self.river}_r{ds_order:03d}_posterior.tif"
+
+    def window_context(self, ds_order: int) -> Path:
+        return self.model_dir / f"{self.river}_r{ds_order:03d}_window.tif"
 
     @property
     def mask_qa_dir(self) -> Path:

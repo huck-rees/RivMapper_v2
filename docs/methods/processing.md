@@ -95,10 +95,34 @@ Each reach's channel area in observed and sparse years is compared with its 5-ye
 |---|---|
 | `masks/processed/{river}_r{NNN}_{year}.tif` | 4 bands, uint8, 255 outside the reach polygon and in `no_data` years: `channel` (0/1), `core` (0/1), `p_envelope` and `p_core` (× 100). Tags: status and flags |
 | `masks/model/{river}_r{NNN}_posterior.tif` | HMM posteriors, P(channel) then P(margin) per year (× 100) |
-| `masks/{river}_process_masks_qa.csv` | One row per reach-year: status, coverage, channel and core area (km²), area score, rerun, through, bridges joined, dead ends removed, flags |
+| `masks/{river}_process_masks_qa.csv` | One row per reach-year (columns below) |
+| `masks/diagnostics/{river}_r{NNN}_{year}.tif` | Decision codes: why each pixel is or is not channel (table below). uint8, 255 outside the polygon; the codes are also in the file tags |
+| `masks/model/{river}_r{NNN}_window.tif` | Window context, on the window grid: reach owner (`ds_order`), terminal zones, rasterised reach line. uint16 |
+| `masks/model/{river}_hmm_{key}.json`, `…_coverage_{key}.json` | Fitted HMM and per-reach coverage (also used to resume an interrupted run) |
 | `masks/qa/{river}_r{NNN}_qa.png` | Area by year with status and outliers, and six mask thumbnails |
 | `masks/qa/{river}_overview.png` | Channel area by reach and year relative to each reach's median |
-| `masks/{river}_process_masks_run.yaml` | Run record, with the fitted HMM parameters |
+| `masks/{river}_process_masks_run.yaml` | Run record: every setting, git commit, package versions, fitted HMM, summary |
+
+Diagnostics and window context are written when `keep_diagnostics: true` (default). Switching it doesn't change the masks or force a rerun.
+
+**Decision codes** (`masks/diagnostics/`):
+
+| Code | Meaning |
+|---|---|
+| 0 | Not water: below both probability thresholds |
+| 1 | Channel: low-flow core |
+| 2 | Channel: grown into the high-stage envelope |
+| 3 | Channel: gap closed or bridged |
+| 4 | Channel: small dry hole filled |
+| 10 | Dropped: water not connected to the river's through-flow network (ponds, oxbows, unseeded pieces, envelope beyond the 1 W growth limit) |
+| 11 | Dropped: over-wide blob off the reach line |
+| 12 | Dropped: dead-end branch |
+| 13 | Dropped: piece too small |
+| 14 | Dropped: by the stricter rerun of a high-area year |
+
+Codes 1–4 are exactly the `channel` band. Every count is also in the QA table.
+
+**QA table columns:** `ds_order`, `year`, `status`, `coverage`, `channel_km2`, `core_km2`, `score` (area vs 5-year running median, in robust SDs), `rerun`, `channel_km2_before_rerun`, `envelope_threshold` (used for the kept mask), pixel counts `seed_px`, `bridge_px`, `channel_px`, `core_px`, `not_connected_px`, `removed_wide_px`, `dead_end_px`, `small_px`, `filled_px`, counts `bridges_joined`, `dead_ends_removed`, `through` (a piece linked the window's terminals), `mean_width_m` (area / reach length), `width_over_W` (relative to `width_ref`), `flags`.
 
 Flags: `sparse`, `inferred`, `marginal` (W < 3 px), `unresolved` (W < 2 px), `area_high`, `area_low`.
 

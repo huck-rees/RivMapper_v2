@@ -126,9 +126,10 @@ class SyntheticRiver:
     def reach_lines(self) -> gpd.GeoDataFrame:
         """The first year's centreline cut by reach (stands in for SWORD)."""
         polys = self.reach_polygons()
+        geoms = [self.centerline.intersection(p) for p in polys.geometry]
         return gpd.GeoDataFrame(
-            {"ds_order": polys["ds_order"]},
-            geometry=[self.centerline.intersection(p) for p in polys.geometry],
+            {"ds_order": polys["ds_order"], "reach_len": [g.length for g in geoms]},
+            geometry=geoms,
             crs=self.grid.crs,
         )
 

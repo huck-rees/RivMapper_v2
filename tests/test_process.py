@@ -377,6 +377,24 @@ def test_process_step_end_to_end(tmp_path):
             sub |= band == 1
         ious.append(metrics.iou(pred, river.truth[t]))
     assert np.mean(ious) > 0.85
+    # diagnostics: decision codes agree with the channel band
+    from rivmapper_v2.process.channel import DECISIONS
+
+    y = river.years[20]
+    with rasterio.open(r.paths.processed_mask(2, y)) as src:
+        ch = src.read(1)
+    with rasterio.open(r.paths.diagnostic(2, y)) as src:
+        d = src.read(1)
+        assert "decision_codes" in src.tags()
+    assert ((ch == 1) == np.isin(d, [1, 2, 3, 4])).all()
+    assert ((ch == 255) == (d == 255)).all()
+    assert set(np.unique(d)) <= set(DECISIONS) | {255}
+    assert (d == 10).any()  # the cutoff's oxbow / noise was dropped somewhere
+    with rasterio.open(r.paths.window_context(2)) as src:
+        assert src.count == 3 and src.read(2).max() >= 2  # two terminal zones
+    for col in ("seed_px", "not_connected_px", "envelope_threshold", "width_over_W"):
+        assert col in qa_table.columns
+    assert qa_table["width_over_W"].between(0.5, 3).mean() > 0.8
     # second run: nothing to do
     again = run_pipeline(project, steps=["process_masks"])
     assert again.iloc[0]["status"] == "skipped"

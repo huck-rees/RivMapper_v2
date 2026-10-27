@@ -134,6 +134,7 @@ process:
   use_channel_belt: {_v(pr["use_channel_belt"])}        # limit to the Nyberg et al. (2023) channel belt
   max_hand_m: {_v(pr["max_hand_m"])}               # drop water higher than this above the channel (m)
   resolvable_px: {_v(pr["resolvable_px"])}             # reaches narrower than this many pixels are flagged
+  keep_diagnostics: {_v(pr["keep_diagnostics"])}         # write per-pixel decision rasters (masks/diagnostics/)
 """
 
 
