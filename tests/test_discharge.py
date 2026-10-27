@@ -1,4 +1,8 @@
-"""Step discharge with a fake GEOGLOWS source (no network needed)."""
+"""Step discharge with a fake GEOGLOWS source (no network needed).
+
+Shared join / stage logic is tested here; GloFAS-specific parts in
+test_glofas.py.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rivmapper_v2 import Project, run_pipeline
+from rivmapper_v2 import run_pipeline
+from rivmapper_v2.config import ConfigError, DischargeSettings
 from rivmapper_v2.discharge import (
     downstream_end,
     join_reaches,
@@ -36,7 +41,7 @@ class FakeGeoglows:
                 ).to_crs(4326)
                 rows.append(
                     {
-                        "LINKNO": 700000000 + 10 * int(o) + k,
+                        "id": 700000000 + 10 * int(o) + k,
                         "lon": pt.x.iloc[0],
                         "lat": pt.y.iloc[0],
                         "area_km2": area,
@@ -58,52 +63,6 @@ class FakeGeoglows:
         return pd.DataFrame({i: q for i in river_ids}, index=idx)
 
 
-@pytest.fixture
-def stage_project(synthetic_project):
-    cfg = synthetic_project
-    cfg.write_text(cfg.read_text() + "masks:\n  year_start: 2002\n  year_end: 2004\n")
-    p = Project.load(cfg)
-    run_pipeline(p, steps=["sword", "reaches"])
-    river = p.river("Synth")
-    # a scene manifest as extract_masks writes it: per reach, two scenes a
-    # year near the seasonal low (early Jan) in 2002, near the high (Jul)
-    # in 2003, mixed in 2004; one dropped scene that must be ignored
-    rows = []
-    lines = gpd.read_file(river.paths.reach_lines)
-    for o in lines["ds_order"]:
-        for y, dates in {
-            2002: ["01-05", "01-10"],
-            2003: ["07-01", "07-05"],
-            2004: ["01-05", "07-05"],
-        }.items():
-            for d in dates:
-                rows.append(
-                    dict(
-                        ds_order=o,
-                        year=y,
-                        scene_id=f"s{y}{d}",
-                        date=f"{y}-{d}",
-                        clear_frac=0.8,
-                        kept=True,
-                        reason="",
-                    )
-                )
-            rows.append(
-                dict(
-                    ds_order=o,
-                    year=y,
-                    scene_id=f"bad{y}",
-                    date=f"{y}-04-01",
-                    clear_frac=0.9,
-                    kept=False,
-                    reason="false_water",
-                )
-            )
-    river.paths.masks_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_csv(river.paths.scene_manifest, index=False)
-    return p
-
-
 def test_weighted_median():
     assert weighted_median(np.array([1.0, 2, 3]), np.array([1.0, 1, 1])) == 2
     assert weighted_median(np.array([1.0, 2, 3]), np.array([0.1, 0.1, 5])) == 3
@@ -114,9 +73,11 @@ def test_join_prefers_area_match_over_nearest(stage_project):
     river = stage_project.river("Synth")
     lines = gpd.read_file(river.paths.reach_lines)
     src = FakeGeoglows(lines)
-    join = join_reaches(lines, src, search_km=5, tol=2)
+    join = join_reaches(lines, src, search_km=5, tol=2, source_name="geoglows_v2")
     # the tributary is nearer, but the mainstem link matches on area
     assert (join.river_id % 10 == 0).all()
+    assert (join.source == "geoglows_v2").all()
+    assert join.cell_row.isna().all()  # grid columns are GloFAS only
     assert (join.method == "area_matched").all()
     assert join.dist_km.between(0.9, 1.1).all()
     # a tight radius leaves no area match: best area within 2x radius
@@ -149,6 +110,7 @@ def test_discharge_step_end_to_end(stage_project, monkeypatch):
     from rivmapper_v2 import discharge
 
     river = stage_project.river("Synth")
+    river.discharge.source = "geoglows_v2"
     src = FakeGeoglows(gpd.read_file(river.paths.reach_lines))
     monkeypatch.setattr(discharge, "Geoglows", lambda: src)
     table = run_pipeline(stage_project, steps=["discharge"])
@@ -157,6 +119,7 @@ def test_discharge_step_end_to_end(stage_project, monkeypatch):
     join = pd.read_csv(p.discharge_join)
     stage = pd.read_csv(p.stage_table, keep_default_na=False, na_values=[""])
     daily = pd.read_csv(p.discharge_daily, index_col="date", parse_dates=True)
+    assert p.discharge_join.name == "Synth_discharge_join.csv"
     assert sorted(src.requested) == sorted(join.river_id.unique())
     assert daily.index.min().year == 2002 and daily.index.max().year == 2004
     assert len(stage) == len(join) * 3
@@ -174,7 +137,7 @@ def test_discharge_failure_does_not_block_processing(stage_project, monkeypatch)
         def links(self, bbox):
             raise OSError("no network")
 
-    monkeypatch.setattr(discharge, "Geoglows", Offline)
+    monkeypatch.setattr(discharge, "make_source", lambda river: Offline())
     table = run_pipeline(stage_project, steps=["discharge", "process_masks"])
     st = dict(zip(table.step, table.status, strict=True))
     assert st["discharge"] == "failed"
@@ -185,9 +148,81 @@ def test_manual_river_id(stage_project, monkeypatch):
     from rivmapper_v2 import discharge
 
     river = stage_project.river("Synth")
+    river.discharge.source = "geoglows_v2"
     river.discharge.river_id = 123456789
     src = FakeGeoglows(gpd.read_file(river.paths.reach_lines))
     res = discharge.discharge(river, src)
     assert res.status == "ok", res.message
     join = pd.read_csv(river.paths.discharge_join)
     assert (join.river_id == 123456789).all() and (join.method == "manual").all()
+
+
+def test_manual_lon_lat_geoglows(stage_project):
+    """manual_lon/lat picks the link outlet nearest to the point."""
+    from rivmapper_v2 import discharge
+
+    river = stage_project.river("Synth")
+    lines = gpd.read_file(river.paths.reach_lines)
+    src = FakeGeoglows(lines)
+    target = src.table.iloc[4]
+    settings = DischargeSettings(
+        source="geoglows_v2",
+        manual_lon=float(target.lon) + 0.001,
+        manual_lat=float(target.lat),
+    )
+    river = river.model_copy(update={"discharge": settings})
+    res = discharge.discharge(river, src)
+    assert res.status == "ok", res.message
+    join = pd.read_csv(river.paths.discharge_join)
+    assert (join.river_id == target["id"]).all() and (join.method == "manual").all()
+    assert join.dist_km.notna().all() and join.area_ratio.notna().all()
+
+
+def test_discharge_settings_validation():
+    assert DischargeSettings().source == "glofas"
+    for v in (4, 4.0, "4", "4.0", "v4.0", "version_4_0"):
+        assert DischargeSettings(glofas_version=v).glofas_version == "4.0"
+    s = DischargeSettings(glofas_version="5")
+    assert s.glofas_system_version == "version_5_0"
+    with pytest.raises(ValueError, match="glofas_version"):
+        DischargeSettings(glofas_version="3.1")
+    with pytest.raises(ValueError, match="both manual_lon and manual_lat"):
+        DischargeSettings(manual_lon=141.2)
+    with pytest.raises(ValueError, match="river_id is a GEOGLOWS"):
+        DischargeSettings(river_id=5)
+    DischargeSettings(source="geoglows_v2", river_id=5)  # fine
+
+
+def test_per_river_discharge_overrides(tmp_path):
+    """Discharge settings as rivers.csv columns, incl. a relative glofas_dir."""
+    from rivmapper_v2 import Project
+
+    from .conftest import CHAIN, make_sword, write_project
+
+    make_sword(tmp_path)
+    cfg = write_project(
+        tmp_path,
+        f"""
+        river_name,sword_cont_abb,us_sword_reach_id,ds_sword_reach_id,source,glofas_version,manual_lon,manual_lat,glofas_dir,river_id
+        A,sa,{CHAIN[0]},{CHAIN[-1]},,5.0,-59.8,-10.0,lab_glofas,
+        B,sa,{CHAIN[0]},{CHAIN[-1]},geoglows_v2,,,,,712345678
+    """,
+        "discharge:\n  glofas_version: 4.0\n",
+    )
+    p = Project.load(cfg)
+    a, b = p.river("A").discharge, p.river("B").discharge
+    assert a.source == "glofas" and a.glofas_version == "5.0"
+    assert (a.manual_lon, a.manual_lat) == (-59.8, -10.0)
+    assert a.glofas_dir == (tmp_path / "lab_glofas").resolve()
+    assert b.source == "geoglows_v2" and b.river_id == 712345678
+    assert b.glofas_version == "4.0"  # YAML float 4.0 accepted
+
+    bad = write_project(
+        tmp_path,
+        f"""
+        river_name,sword_cont_abb,us_sword_reach_id,ds_sword_reach_id,river_id
+        A,sa,{CHAIN[0]},{CHAIN[-1]},712345678
+    """,
+    )
+    with pytest.raises(ConfigError, match="river_id is a GEOGLOWS"):
+        Project.load(bad)

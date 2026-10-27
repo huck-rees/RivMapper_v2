@@ -13,7 +13,7 @@
 #   versions.<v>.unpack   what to keep from an archive (glob), flattened
 #   versions.<v>.expect   files that must exist afterwards ({version} filled in)
 #   subdir            folder under the datasets dir
-#   access            "download" (fetchable) | "gee" | "manual"
+#   access            "download" (fetchable) | "gee" | "manual" | "api (...)"
 
 sword:
   title: SWOT River Database (SWORD)
@@ -66,3 +66,57 @@ geoglows_table:
     https://doi.org/10.1111/jfr3.12859. GEOGLOWS Hydrological Model
     Version 2 accessed from https://registry.opendata.aws/geoglows-v2
     (CC BY 4.0).
+
+glofas_uparea:
+  title: GloFAS upstream-area map (LISFLOOD static maps)
+  subdir: GloFAS
+  access: download
+  license: CC-BY-4.0
+  # Keyed by GloFAS version (discharge: glofas_version). The upstream area
+  # of every 0.05-degree cell (m2), used to match GloFAS cells to SWORD
+  # reaches. Published by the JRC with the LISFLOOD static maps for GloFAS.
+  default_version: "4.0"
+  versions:
+    "4.0":
+      url: https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/CEMS-GLOFAS/LISFLOOD_static_and_parameter_maps_for_GloFAS/v1.1.1_OS-LISFLOOD-v4.x/Catchments_morphology_and_river_network/upArea_repaired.nc
+      hash: null
+      size_gb: 0.1
+      expect:
+        - upArea_repaired.nc
+    "5.0":
+      url: https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/CEMS-GLOFAS/LISFLOOD_static_and_parameter_maps_for_GloFAS/v2.1.1_OS-LISFLOOD-v5.x/Catchments_morphology_and_river_network/upArea_repaired_correctedmetadata_3000.nc
+      hash: null
+      size_gb: 0.09
+      expect:
+        - upArea_repaired_correctedmetadata_3000.nc
+  citation: >-
+    Choulga, M., Beck, H., Moschini, F., Mazzetti, C., Disperati, J.,
+    Grimaldi, S., Salamon, P., & Prudhomme, C. (2023). LISFLOOD static and
+    parameter maps for GloFAS. European Commission, Joint Research Centre
+    (JRC) [Dataset]. http://data.europa.eu/89h/68050d73-9c06-499c-a441-dc5053cb0c86
+
+glofas_historical:
+  title: GloFAS historical river discharge reanalysis (cems-glofas-historical)
+  subdir: GloFAS
+  # Not downloaded as a whole: step discharge requests one year at a time,
+  # clipped to each river, from the CEMS Early Warning Data Store (EWDS).
+  # Needs an EWDS account and API key; see docs/methods/discharge.md.
+  access: api (EWDS)
+  license: CEMS-FLOODS datasets licence
+  default_version: "4.0"
+  versions:
+    "4.0":
+      url: https://ewds.climate.copernicus.eu/datasets/cems-glofas-historical
+      doi: 10.24381/cds.a4fdd6b9
+    "5.0":
+      url: https://ewds.climate.copernicus.eu/datasets/cems-glofas-historical
+      doi: 10.24381/cds.a4fdd6b9
+  citation: >-
+    Harrigan, S., Zsoter, E., Alfieri, L., Prudhomme, C., Salamon, P.,
+    Wetterhall, F., Barnard, C., Cloke, H., & Pappenberger, F. (2020).
+    GloFAS-ERA5 operational global river discharge reanalysis 1979-present.
+    Earth System Science Data, 12, 2043-2060.
+    https://doi.org/10.5194/essd-12-2043-2020. Data: Copernicus Emergency
+    Management Service (2019). River discharge and related historical data
+    from the Global Flood Awareness System. Early Warning Data Store (EWDS).
+    https://doi.org/10.24381/cds.a4fdd6b9

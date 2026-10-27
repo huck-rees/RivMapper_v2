@@ -321,19 +321,47 @@ class ProcessSettings(_Section):
         return self
 
 
+GLOFAS_VERSIONS = ("4.0", "5.0")
+
+
 class DischargeSettings(_Section):
     """Step ``discharge``: modelled discharge on scene dates (stage flag)."""
 
-    source: Literal["geoglows_v2"] = "geoglows_v2"
+    source: Literal["glofas", "geoglows_v2"] = Field(
+        "glofas",
+        description=(
+            "glofas: GloFAS historical reanalysis (CEMS EWDS; needs an account). "
+            "geoglows_v2: GEOGLOWS v2 retrospective (AWS, anonymous)."
+        ),
+    )
+    glofas_version: str = Field(
+        "4.0", description=f"GloFAS reanalysis version: one of {GLOFAS_VERSIONS}."
+    )
+    glofas_product_type: Literal["consolidated", "intermediate"] = Field(
+        "consolidated",
+        description=(
+            "consolidated (ERA5, updated monthly) or intermediate (ERA5T, recent "
+            "months only)."
+        ),
+    )
+    glofas_dir: Path | None = Field(
+        None,
+        description=(
+            "Folder of GloFAS NetCDF files already on disk (e.g. a lab archive). "
+            "Read first; only what they lack is downloaded."
+        ),
+    )
     search_km: float = Field(
-        5.0, gt=0, description="Search radius for GEOGLOWS links around a reach end."
+        5.0,
+        gt=0,
+        description="Search radius for model rivers/cells around a reach end.",
     )
     area_tolerance: float = Field(
         2.0,
         gt=1,
         description=(
-            "A GEOGLOWS link matches a reach when their drainage areas differ by "
-            "less than this factor."
+            "A model river or cell matches a reach when their drainage areas "
+            "differ by less than this factor."
         ),
     )
     low_stage_pctile: float = Field(
@@ -348,10 +376,56 @@ class DischargeSettings(_Section):
         le=100,
         description="Scene-date discharge above this percentile → high_stage.",
     )
+    manual_lon: float | None = Field(
+        None,
+        ge=-180,
+        le=180,
+        description=(
+            "Manual override (both sources): use the model river at this point "
+            "for every reach (GloFAS: the grid cell containing it; GEOGLOWS: "
+            "the link outlet nearest to it). Set with manual_lat."
+        ),
+    )
+    manual_lat: float | None = Field(None, ge=-90, le=90)
     river_id: int | None = Field(
         None,
-        description="Use this GEOGLOWS river id for every reach (manual override).",
+        description="GEOGLOWS only: use this river id (LINKNO) for every reach.",
     )
+
+    @field_validator("glofas_version", mode="before")
+    @classmethod
+    def _norm_version(cls, v: Any) -> str:
+        """Accept 4, 4.0, "4", "v4.0" or "version_4_0" for "4.0"."""
+        text = str(v).strip().lower().removeprefix("version_").removeprefix("v")
+        text = text.replace("_", ".")
+        try:
+            text = f"{float(text):.1f}"
+        except ValueError:
+            pass
+        if text not in GLOFAS_VERSIONS:
+            raise ValueError(
+                f"glofas_version must be one of {list(GLOFAS_VERSIONS)} (got {v!r})"
+            )
+        return text
+
+    @model_validator(mode="after")
+    def _manual_override(self) -> DischargeSettings:
+        if (self.manual_lon is None) != (self.manual_lat is None):
+            raise ValueError("set both manual_lon and manual_lat, or neither")
+        if self.river_id is not None:
+            if self.source != "geoglows_v2":
+                raise ValueError(
+                    "river_id is a GEOGLOWS link id; for GloFAS use "
+                    "manual_lon/manual_lat"
+                )
+            if self.manual_lon is not None:
+                raise ValueError("set river_id or manual_lon/manual_lat, not both")
+        return self
+
+    @property
+    def glofas_system_version(self) -> str:
+        """EWDS request value, e.g. ``version_4_0``."""
+        return "version_" + self.glofas_version.replace(".", "_")
 
 
 # Sections whose fields may be overridden per river in the rivers table.
@@ -497,7 +571,9 @@ class Project:
         """Load and validate ``rivmapper.yaml`` and its rivers table.
 
         Relative paths in the YAML (``data_root``, ``rivers_table``,
-        ``sword.dir``) are resolved against the YAML file's folder.
+        ``sword.dir``, ``discharge.glofas_dir``) are resolved against the YAML
+        file's folder; a relative ``glofas_dir`` in the rivers table against
+        the table's folder.
 
         Raises:
             FileNotFoundError: If the YAML or rivers table does not exist.
@@ -578,6 +654,8 @@ def load_settings(config_path: Path) -> ProjectSettings:
         settings.sword.dir = _resolve(settings.sword.dir, base)
     if settings.gee.key_file is not None:
         settings.gee.key_file = _resolve(settings.gee.key_file, base)
+    if settings.discharge.glofas_dir is not None:
+        settings.discharge.glofas_dir = _resolve(settings.discharge.glofas_dir, base)
     return settings
 
 
@@ -680,6 +758,10 @@ def _resolve_row(
         overrides = {
             f: cells[f] for f in model.model_fields if cells.get(f) is not None
         }
+        if section == "discharge" and overrides.get("glofas_dir"):
+            overrides["glofas_dir"] = _resolve(
+                Path(overrides["glofas_dir"]), settings.rivers_table.parent
+            )
         sections[section] = model.model_validate({**base, **overrides})
 
     return River(

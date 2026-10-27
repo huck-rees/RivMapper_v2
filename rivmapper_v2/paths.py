@@ -29,13 +29,15 @@ subfolder per step::
         │   ├── {river}_process_masks_qa.csv     one row per reach-year
         │   └── {river}_process_masks_run.yaml
         └── discharge/                           step: discharge
-            ├── {river}_geoglows_join.csv        reach → GEOGLOWS river id
-            ├── {river}_geoglows_daily.csv       daily discharge, one column per river id
+            ├── glofas/{river}_glofas_v4_0_consolidated_{year}.nc
+            │                                    GloFAS download cache (one file per year)
+            ├── {river}_discharge_join.csv       reach → model river (GloFAS cell / GEOGLOWS link)
+            ├── {river}_discharge_daily.csv      daily discharge, one column per river_id
             ├── {river}_stage.csv                discharge on scene dates, per reach-year
             └── {river}_discharge_run.yaml
 
-Shared external datasets (the continental SWORD files) live outside
-``data_root``; see ``rivmapper_v2.data``.
+Shared external datasets (the continental SWORD files, the GloFAS
+upstream-area map) live outside ``data_root``; see ``rivmapper_v2.data``.
 """
 
 from __future__ import annotations
@@ -167,11 +169,23 @@ class RiverPaths:
 
     @property
     def discharge_join(self) -> Path:
-        return self.discharge_dir / f"{self.river}_geoglows_join.csv"
+        return self.discharge_dir / f"{self.river}_discharge_join.csv"
 
     @property
     def discharge_daily(self) -> Path:
-        return self.discharge_dir / f"{self.river}_geoglows_daily.csv"
+        return self.discharge_dir / f"{self.river}_discharge_daily.csv"
+
+    @property
+    def glofas_cache_dir(self) -> Path:
+        """GloFAS files downloaded for this river (clipped to its area)."""
+        return self.discharge_dir / "glofas"
+
+    def glofas_cache_file(self, version: str, product_type: str, year: int) -> Path:
+        """One year of GloFAS discharge, e.g. ``..._glofas_v4_0_consolidated_2005.nc``."""
+        v = "v" + version.replace(".", "_")
+        return (
+            self.glofas_cache_dir / f"{self.river}_glofas_{v}_{product_type}_{year}.nc"
+        )
 
     @property
     def stage_table(self) -> Path:

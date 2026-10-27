@@ -16,7 +16,7 @@ conda activate rivmapper_v2
 rivmapper data fetch sword        # optional: download SWORD now (~2 GB) instead of on first run
 ```
 
-`environment.yml` installs the package in editable mode, which also provides the `rivmapper` command. In an existing environment, run `pip install -e ".[dev]"` from the repo root.
+`environment.yml` installs the package in editable mode, which also provides the `rivmapper` command. In an existing environment, run `pip install -e ".[dev]"` from the repo root, plus `conda install -c conda-forge xarray netcdf4 ecmwf-datastores-client` for the `discharge` step.
 
 ## Folder layout
 
@@ -26,7 +26,8 @@ Everything lives inside the repo folder. `data/` and `projects/` are ignored by 
 RivMapper_v2/
 ├── rivmapper_v2/          code
 ├── data/                  shared external datasets, downloaded once
-│   └── SWORD/             all continents (rivmapper data fetch sword)
+│   ├── SWORD/             all continents (rivmapper data fetch sword)
+│   └── GloFAS/            GloFAS upstream-area map (rivmapper data fetch glofas_uparea)
 └── projects/              your projects
     └── oktedi/
         ├── rivmapper.yaml
@@ -34,7 +35,9 @@ RivMapper_v2/
         └── output/        everything this project produces
             └── OkTedi/    one folder per river
                 ├── sword/     traced SWORD reaches and nodes
-                └── reaches/   reach lines, polygons, valley line
+                ├── reaches/   reach lines, polygons, valley line
+                ├── masks/     raw counts, scene manifest, processed masks
+                └── discharge/ join, daily discharge, stage flags (+ glofas/ download cache)
 ```
 
 ## Google Earth Engine
@@ -47,6 +50,21 @@ The `extract_masks` step uses Earth Engine. One-time setup:
 4. Test: `rivmapper gee check projects/oktedi/rivmapper.yaml`. It reports the connection and how many Landsat scenes cover each river.
 
 Headless servers can use a service account instead: set `gee: service_account:` and `gee: key_file:`.
+
+## GloFAS discharge (EWDS)
+
+The `discharge` step reads GloFAS river discharge from the Copernicus Early Warning Data Store (EWDS). One-time setup per machine:
+
+1. Register (free) at <https://ewds.climate.copernicus.eu> and log in.
+2. Accept the dataset's licence: open [cems-glofas-historical](https://ewds.climate.copernicus.eu/datasets/cems-glofas-historical?tab=download), scroll to the bottom of the *Download* tab and accept the CEMS-FLOODS licence.
+3. Copy your API key (personal access token) from your EWDS profile page.
+4. Save it in a text file named `.ecmwfdatastoresrc` in your home folder (Windows: `C:\Users\<you>\.ecmwfdatastoresrc`), with two lines:
+   ```
+   url: https://ewds.climate.copernicus.eu/api
+   key: <your personal access token>
+   ```
+
+Downloads are clipped to each river and cached in `{river}/discharge/glofas/`, so a rerun downloads nothing. If your lab already has GloFAS NetCDF files, point `discharge: glofas_dir:` at them and only what they lack is downloaded. Details: [docs/methods/discharge.md](docs/methods/discharge.md). To use GEOGLOWS v2 instead (no account), set `discharge: source: geoglows_v2`.
 
 ## External datasets
 
@@ -130,7 +148,7 @@ If the old working directory already holds a `SWORD/` folder, the new config kee
 - [CRS and data conventions](docs/methods/conventions.md): projections, raster grid, mask values, units
 - [Reach definition](docs/methods/reaches.md): valley line, reach length, reach polygons
 - [Water masks](docs/methods/masks.md): Landsat, DSWE, annual observation counts, download
-- [Discharge on scene dates](docs/methods/discharge.md): GEOGLOWS v2 join and stage flags
+- [Discharge on scene dates](docs/methods/discharge.md): GloFAS (or GEOGLOWS v2) join and stage flags
 - [Mask processing](docs/methods/processing.md): counts to annual channel masks (in development)
 
 ## Pipeline steps
@@ -140,7 +158,7 @@ If the old working directory already holds a `SWORD/` folder, the new config kee
 | `sword` | `rivmapper_v2/sword.py` | `{river}/sword/`: traced SWORD reaches and nodes |
 | `reaches` | `rivmapper_v2/reaches.py`, `valley.py` | `{river}/reaches/`: reach lines, polygons and valley line. Reaches are 100 channel widths of valley length, split by nearest position along the valley, so polygons never overlap. Method and citations: [docs/methods/reaches.md](docs/methods/reaches.md) |
 | `extract_masks` | `rivmapper_v2/masks.py`, `gee.py` | `{river}/masks/raw/`: annual Landsat DSWE observation counts from Earth Engine (`n_obs`, `n_wet_1`…`n_wet_4`, `n_obs_le07`), on the river's 30 m grid, from scenes screened for false water; plus a scene manifest |
-| `discharge` | `rivmapper_v2/discharge.py` | `{river}/discharge/`: GEOGLOWS v2 modelled discharge on scene dates and low/high-stage flags per reach-year. Optional (needs network access to AWS). Method: [docs/methods/discharge.md](docs/methods/discharge.md) |
+| `discharge` | `rivmapper_v2/discharge.py`, `glofas.py` | `{river}/discharge/`: modelled discharge on scene dates and low/high-stage flags per reach-year, from GloFAS (default; EWDS account needed, see above) or GEOGLOWS v2. Optional: later steps run without it. Method: [docs/methods/discharge.md](docs/methods/discharge.md) |
 | `process_masks` | `rivmapper_v2/process/` | Writes `{river}/masks/processed/`: annual near-bankfull channel and low-flow core masks, with a QA table and QA figures. In development (phases 1–2 of 4 done; needs `scikit-image`). Method: [docs/methods/processing.md](docs/methods/processing.md) |
 
 ## Repository structure

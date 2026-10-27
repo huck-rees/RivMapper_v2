@@ -129,13 +129,13 @@ def cmd_data(args: argparse.Namespace) -> int:
 
     if args.action == "list":
         print(f"Datasets folder: {data.datasets_dir()}\n")
-        print(f"{'name':<10}{'version':<10}{'size':>8}  {'status':<24}location")
+        print(f"{'name':<20}{'version':<10}{'size':>8}  {'status':<24}location")
         for n in selected:
             ds = data.get_dataset(n)
             where = data.dataset_dir(ds, folder)
             state = data.status(ds, where)
             size = f"{ds.size_gb} GB" if ds.size_gb else ""
-            print(f"{n:<10}{ds.version:<10}{size:>8}  {state:<24}{where}")
+            print(f"{n:<20}{ds.version:<10}{size:>8}  {state:<24}{where}")
         return 0
 
     if args.action == "fetch":
@@ -144,6 +144,8 @@ def cmd_data(args: argparse.Namespace) -> int:
                 "name a dataset (e.g. `rivmapper data fetch sword`) or use --all"
             )
         for n in selected:
+            if args.all and data.get_dataset(n).access != "download":
+                continue  # e.g. read through an API by a pipeline step
             path = data.fetch(n, args.version, folder=folder, force=args.force)
             print(f"{n}: ready in {path}")
         return 0

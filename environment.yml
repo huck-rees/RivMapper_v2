@@ -23,8 +23,10 @@ dependencies:
   - requests
   - tqdm
   - pooch>=1.8
-  # step discharge (GEOGLOWS v2 from AWS Open Data)
+  # step discharge: GloFAS (default; EWDS client + NetCDF) and GEOGLOWS v2 (AWS)
   - xarray
+  - netcdf4
+  - ecmwf-datastores-client
   - zarr
   - s3fs
   - pyarrow

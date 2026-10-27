@@ -154,6 +154,8 @@ def is_installed(ds: Dataset, folder: Path | None = None) -> bool:
 
 def status(ds: Dataset, folder: Path | None = None) -> str:
     """'installed', 'partial (n/N files)', 'not downloaded', or the access type."""
+    if ds.access != "download":
+        return ds.access
     where = dataset_dir(ds, folder)
     n_missing, n_total = len(missing_files(ds, where)), len(ds.expected_files)
     if n_missing == 0:

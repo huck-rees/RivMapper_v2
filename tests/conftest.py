@@ -7,6 +7,7 @@ import textwrap
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 import pytest
 from shapely.geometry import LineString
 
@@ -116,3 +117,52 @@ def real_sword_dir() -> Path:
     if not d or not Path(d).exists():
         pytest.skip("set RIVMAPPER_TEST_SWORD_DIR to run tests on real SWORD data")
     return Path(d)
+
+
+@pytest.fixture
+def stage_project(synthetic_project):
+    """Synthetic river after sword + reaches, with a scene manifest for 2002-04."""
+    from rivmapper_v2 import Project, run_pipeline
+
+    cfg = synthetic_project
+    cfg.write_text(cfg.read_text() + "masks:\n  year_start: 2002\n  year_end: 2004\n")
+    p = Project.load(cfg)
+    run_pipeline(p, steps=["sword", "reaches"])
+    river = p.river("Synth")
+    # a scene manifest as extract_masks writes it: per reach, two scenes a
+    # year near the seasonal low (early Jan) in 2002, near the high (Jul)
+    # in 2003, mixed in 2004; one dropped scene that must be ignored
+    rows = []
+    lines = gpd.read_file(river.paths.reach_lines)
+    for o in lines["ds_order"]:
+        for y, dates in {
+            2002: ["01-05", "01-10"],
+            2003: ["07-01", "07-05"],
+            2004: ["01-05", "07-05"],
+        }.items():
+            for d in dates:
+                rows.append(
+                    dict(
+                        ds_order=o,
+                        year=y,
+                        scene_id=f"s{y}{d}",
+                        date=f"{y}-{d}",
+                        clear_frac=0.8,
+                        kept=True,
+                        reason="",
+                    )
+                )
+            rows.append(
+                dict(
+                    ds_order=o,
+                    year=y,
+                    scene_id=f"bad{y}",
+                    date=f"{y}-04-01",
+                    clear_frac=0.9,
+                    kept=False,
+                    reason="false_water",
+                )
+            )
+    river.paths.masks_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(river.paths.scene_manifest, index=False)
+    return p

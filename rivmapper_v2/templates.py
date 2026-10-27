@@ -39,9 +39,10 @@ def render_config(
 # RivMapper v2 project configuration
 # ────────────────────────────────────────────────────────────────────
 # Settings here apply to every river in the rivers table. Any setting in
-# the `reaches:` or `masks:` sections can be overridden for one river by
-# adding a column with the same name to the rivers table; blank cells use
-# the value below. Relative paths are relative to this file.
+# the `reaches:`, `masks:`, `process:` or `discharge:` sections can be
+# overridden for one river by adding a column with the same name to the
+# rivers table; blank cells use the value below. Relative paths are
+# relative to this file.
 #
 # Check it:  rivmapper validate rivmapper.yaml
 # Run it:    rivmapper run rivmapper.yaml [--steps sword,reaches] [--rivers Beni]
@@ -129,14 +130,21 @@ masks:
   percentile: {_v(m["percentile"])}          # per-pixel percentile of per-scene water (50 = median)
   min_pixels: {_v(m["min_pixels"])}
 
-# Step 04: modelled discharge on scene dates → stage flags (discharge; optional:
-# needs network access to the GEOGLOWS v2 bucket on AWS). See docs/methods/discharge.md.
+# Step 04: modelled discharge on scene dates → stage flags (discharge; optional).
+# GloFAS (default) needs a free EWDS account and API key; GEOGLOWS needs only
+# network access to AWS. See docs/methods/discharge.md.
 discharge:
-  search_km: {_v(d["search_km"])}            # search radius for GEOGLOWS links at each reach's downstream end
-  area_tolerance: {_v(d["area_tolerance"])}       # link and reach drainage areas must agree within this factor
+  source: {_v(d["source"])}             # glofas (GloFAS reanalysis, EWDS) or geoglows_v2 (GEOGLOWS v2, AWS)
+  glofas_version: {_v(d["glofas_version"])}      # GloFAS reanalysis version: 4.0 or 5.0 (kept fixed for a project)
+  glofas_product_type: {_v(d["glofas_product_type"])}  # consolidated (ERA5) or intermediate (ERA5T, last few months)
+  glofas_dir: {_v(d["glofas_dir"])}           # folder of GloFAS NetCDF files already on disk (read first; null = none)
+  search_km: {_v(d["search_km"])}            # search radius for GloFAS cells / GEOGLOWS links at each reach's downstream end
+  area_tolerance: {_v(d["area_tolerance"])}       # model and reach upstream areas must agree within this factor
   low_stage_pctile: {_v(d["low_stage_pctile"])}    # scene-date discharge below this percentile → low_stage
   high_stage_pctile: {_v(d["high_stage_pctile"])}   # ... above this percentile → high_stage
-  river_id: {_v(d["river_id"])}             # force one GEOGLOWS river id for every reach
+  manual_lon: {_v(d["manual_lon"])}           # manual override: use the model river at this point for every reach
+  manual_lat: {_v(d["manual_lat"])}           # (GloFAS: the cell containing it; GEOGLOWS: the nearest link outlet)
+  river_id: {_v(d["river_id"])}             # GEOGLOWS only: force one river id (LINKNO) for every reach
 
 # Step 05: raw counts → annual channel masks (process_masks; in development).
 # Spatial settings are multiples of the reach's channel width W. See

@@ -35,7 +35,11 @@ rivmapper = "rivmapper_v2.cli:main"
 
 [project.optional-dependencies]
 discharge = [
+    # GloFAS (default source)
     "xarray",
+    "netCDF4",
+    "ecmwf-datastores-client",
+    # GEOGLOWS v2 (source: geoglows_v2)
     "zarr",
     "s3fs",
     "pyarrow",

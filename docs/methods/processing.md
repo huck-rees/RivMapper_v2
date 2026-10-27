@@ -23,7 +23,7 @@ A low-flow core mask and per-pixel probabilities are written alongside.
 | Channel extraction | Seeds (SWORD + last year's channel), width-scaled gap bridging, through-flow connectivity, removal of over-wide and dead-end water | 1 ✅ (corridor: 3) |
 | Year check | Reach area against its 5-year running median; outliers rerun or flagged | 1 ✅ |
 | Calibration | Envelope threshold matched to bankfull width | 3 |
-| Stage flag | Modelled discharge (GEOGLOWS v2) on scene dates ([discharge.md](discharge.md)) | 2 ✅ |
+| Stage flag | Modelled discharge (GloFAS reanalysis; GEOGLOWS v2 optional) on scene dates ([discharge.md](discharge.md)) | 2 ✅ |
 
 ## Reach windows ✅
 
