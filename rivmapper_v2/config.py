@@ -451,6 +451,8 @@ class DischargeSettings(_Section):
         return "version_" + self.glofas_version.replace(".", "_")
 
 
+_SECTION_KEYS = ("sword", "gee", "reaches", "masks", "process", "discharge")
+
 # Sections whose fields may be overridden per river in the rivers table.
 OVERRIDABLE_SECTIONS: dict[str, type[_Section]] = {
     "reaches": ReachSettings,
@@ -500,6 +502,18 @@ NOTE_COLUMNS = ("notes",)
 
 class ProjectSettings(_Section):
     """Top level of ``rivmapper.yaml``."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _empty_sections_use_defaults(cls, data):
+        # A section header with nothing (or only comments) under it, e.g.
+        # "process:", reads as None in YAML: treat it as "all defaults".
+        if isinstance(data, dict):
+            data = {
+                k: ({} if v is None and k in _SECTION_KEYS else v)
+                for k, v in data.items()
+            }
+        return data
 
     data_root: Path
     rivers_table: Path = Path("rivers.csv")

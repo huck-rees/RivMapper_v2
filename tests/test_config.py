@@ -115,3 +115,12 @@ def test_retired_settings_warn_not_fail(tmp_path, caplog):
     )
     Project.load(cfg)
     assert "tile_size_km2" in caplog.text and "no longer used" in caplog.text
+
+
+def test_empty_section_uses_defaults(tmp_path):
+    from rivmapper_v2.config import ProjectSettings
+
+    s = ProjectSettings.model_validate(
+        {"data_root": tmp_path, "process": None, "discharge": None}
+    )
+    assert s.process.states == 3 and s.discharge.search_km > 0
