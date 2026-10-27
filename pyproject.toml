@@ -38,6 +38,7 @@ discharge = [
     "xarray",
     "zarr",
     "s3fs",
+    "pyarrow",
 ]
 dev = [
     "pytest",

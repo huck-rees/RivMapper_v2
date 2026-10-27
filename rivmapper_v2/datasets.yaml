@@ -47,3 +47,22 @@ sword:
     Topography (SWOT) Mission River Database (SWORD): A global river
     network for satellite data products. Water Resources Research, 57,
     e2021WR030054. https://doi.org/10.1029/2021WR030054
+
+geoglows_table:
+  title: GEOGLOWS v2 model table (TDX-Hydro links)
+  subdir: GEOGLOWS
+  access: download
+  license: CC-BY-4.0
+  default_version: v2
+  versions:
+    v2:
+      url: https://geoglows-v2.s3-us-west-2.amazonaws.com/tables/v2-model-table.parquet
+      hash: null
+      expect:
+        - v2-model-table.parquet
+  citation: >-
+    Hales, R. C., et al. Advancing global hydrologic modeling with the
+    GEOGloWS ECMWF streamflow service. Journal of Flood Risk Management.
+    https://doi.org/10.1111/jfr3.12859. GEOGLOWS Hydrological Model
+    Version 2 accessed from https://registry.opendata.aws/geoglows-v2
+    (CC BY 4.0).

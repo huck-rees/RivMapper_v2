@@ -532,6 +532,34 @@ def _write_mask(path, grid, bands: dict, tags: dict) -> None:
     tmp.replace(path)
 
 
+STAGE_COLUMNS = ("q_scene_median", "q_scene_pctile", "stage_flag")
+
+
+def _add_stage(table: pd.DataFrame, paths) -> pd.DataFrame:
+    """Join the discharge step's stage statistics, if it has run.
+
+    Adds ``q_scene_median`` (m³/s), ``q_scene_pctile`` and ``stage_flag``,
+    and appends ``low_stage`` / ``high_stage`` to ``flags``. Without them
+    the columns are empty and ``flags`` gains ``no_discharge``.
+    """
+    table["flags"] = table["flags"].fillna("").astype(str)
+    if paths.stage_table.exists():
+        stage = pd.read_csv(paths.stage_table)[["ds_order", "year", *STAGE_COLUMNS]]
+        stage["stage_flag"] = stage["stage_flag"].fillna("")
+        table = table.drop(columns=[c for c in STAGE_COLUMNS if c in table.columns])
+        table = table.merge(stage, on=["ds_order", "year"], how="left")
+        extra = table["stage_flag"].fillna("")
+    else:
+        for c in STAGE_COLUMNS:
+            table[c] = np.nan if c != "stage_flag" else ""
+        extra = pd.Series("no_discharge", index=table.index)
+    table["flags"] = [
+        ";".join(x for x in (f, e) if x)
+        for f, e in zip(table["flags"], extra, strict=True)
+    ]
+    return table
+
+
 def _flags(row, river: River, width_px: float) -> str:
     f = []
     if row["status"] in (qa.SPARSE, qa.INFERRED):
@@ -713,6 +741,7 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
 
     table = pd.DataFrame(rows)
     table["score"] = pd.to_numeric(table["score"], errors="coerce").round(2)
+    table = _add_stage(table, p)
     table.to_csv(p.process_qa_table, index=False)
     for o in layout.ds_orders:
         sub_rows = table[table.ds_order == o].to_dict("records")

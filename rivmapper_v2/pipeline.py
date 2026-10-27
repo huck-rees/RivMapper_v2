@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable
 
 import pandas as pd
 
-from . import masks, reaches, sword
+from . import discharge, masks, reaches, sword
 from .config import Project, River
 from .process import step as process_step
 from .results import BLOCKED, StepResult
@@ -21,8 +21,11 @@ STEPS: dict[str, StepFn] = {
     sword.STEP: sword.run,
     reaches.STEP: reaches.run,
     masks.STEP: masks.run,
+    discharge.STEP: discharge.run,
     process_step.STEP: process_step.run,
 }
+# Steps whose failure does not block later steps (their outputs are extras).
+OPTIONAL_STEPS = {discharge.STEP}
 
 
 def run_pipeline(
@@ -67,7 +70,7 @@ def run_pipeline(
         for res in STEPS[step](project, runnable):
             log.info("  %-24s %s", res.river, res)
             all_results.append(res)
-            if not res.succeeded:
+            if not res.succeeded and step not in OPTIONAL_STEPS:
                 failed[res.river] = step
 
     table = pd.DataFrame(

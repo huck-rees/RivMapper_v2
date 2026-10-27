@@ -395,6 +395,9 @@ def test_process_step_end_to_end(tmp_path):
     for col in ("seed_px", "not_connected_px", "envelope_threshold", "width_over_W"):
         assert col in qa_table.columns
     assert qa_table["width_over_W"].between(0.5, 3).mean() > 0.8
+    # no discharge step run: stage columns empty, flagged
+    assert qa_table["flags"].fillna("").str.contains("no_discharge").all()
+    assert qa_table["q_scene_pctile"].isna().all()
     # second run: nothing to do
     again = run_pipeline(project, steps=["process_masks"])
     assert again.iloc[0]["status"] == "skipped"

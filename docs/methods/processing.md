@@ -1,6 +1,6 @@
 # Mask processing (step `process_masks`)
 
-**Status: in development.** Phases 0 (foundations) and 1 (core pipeline) are done: the step writes annual channel masks, a QA table and QA figures. Scene screening, discharge, calibration of the envelope threshold and the channel-belt corridor come in phases 2–3. The full design and build plan are in the *RivMapper mask processing plan* (shared doc, Oct 2026).
+**Status: in development.** Phases 0 (foundations), 1 (core pipeline) and 2 (scene screening at extraction, stage flag from modelled discharge) are built; phase 2 is not yet checked on re-extracted Ok Tedi data. The step writes annual channel masks, a QA table and QA figures. Calibration of the envelope threshold and the channel-belt corridor come in phase 3. The full design and build plan are in the *RivMapper mask processing plan* (shared doc, Oct 2026).
 
 ## Goal
 
@@ -18,12 +18,12 @@ A low-flow core mask and per-pixel probabilities are written alongside.
 | Stage | What | Phase |
 |---|---|---|
 | Windows | Each reach is processed with its upstream and downstream neighbours on the river grid; only the centre reach's result is kept | 0 ✅ |
-| Scene screening | Extraction drops scenes with widespread false water, and writes a scene manifest (raw product v2) | 2 |
+| Scene screening | Extraction drops scenes with widespread false water, and writes a scene manifest (raw product v2; [masks.md](masks.md)) | 2 ✅ |
 | Temporal model | Per-pixel hidden Markov model on the counts (dry / high-stage margin / channel) gives a channel probability every year | 1 ✅ |
 | Channel extraction | Seeds (SWORD + last year's channel), width-scaled gap bridging, through-flow connectivity, removal of over-wide and dead-end water | 1 ✅ (corridor: 3) |
 | Year check | Reach area against its 5-year running median; outliers rerun or flagged | 1 ✅ |
 | Calibration | Envelope threshold matched to bankfull width | 3 |
-| Stage flag | Modelled discharge (GEOGLOWS v2) on scene dates | 2 |
+| Stage flag | Modelled discharge (GEOGLOWS v2) on scene dates ([discharge.md](discharge.md)) | 2 ✅ |
 
 ## Reach windows ✅
 
@@ -122,9 +122,9 @@ Diagnostics and window context are written when `keep_diagnostics: true` (defaul
 
 Codes 1–4 are exactly the `channel` band. Every count is also in the QA table.
 
-**QA table columns:** `ds_order`, `year`, `status`, `coverage`, `channel_km2`, `core_km2`, `score` (area vs 5-year running median, in robust SDs), `rerun`, `channel_km2_before_rerun`, `envelope_threshold` (used for the kept mask), pixel counts `seed_px`, `bridge_px`, `channel_px`, `core_px`, `not_connected_px`, `removed_wide_px`, `dead_end_px`, `small_px`, `filled_px`, counts `bridges_joined`, `dead_ends_removed`, `through` (a piece linked the window's terminals), `mean_width_m` (area / reach length), `width_over_W` (relative to `width_ref`), `flags`.
+**QA table columns:** `ds_order`, `year`, `status`, `coverage`, `channel_km2`, `core_km2`, `score` (area vs 5-year running median, in robust SDs), `rerun`, `channel_km2_before_rerun`, `envelope_threshold` (used for the kept mask), pixel counts `seed_px`, `bridge_px`, `channel_px`, `core_px`, `not_connected_px`, `removed_wide_px`, `dead_end_px`, `small_px`, `filled_px`, counts `bridges_joined`, `dead_ends_removed`, `through` (a piece linked the window's terminals), `mean_width_m` (area / reach length), `width_over_W` (relative to `width_ref`), `q_scene_median`, `q_scene_pctile` and `stage_flag` (from the `discharge` step, when it has run), `flags`.
 
-Flags: `sparse`, `inferred`, `marginal` (W < 3 px), `unresolved` (W < 2 px), `area_high`, `area_low`.
+Flags: `sparse`, `inferred`, `marginal` (W < 3 px), `unresolved` (W < 2 px), `area_high`, `area_low`, `low_stage`, `high_stage`, `no_discharge`.
 
 ## Checks (phase 1)
 

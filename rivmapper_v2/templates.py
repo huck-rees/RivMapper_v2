@@ -6,7 +6,13 @@ from typing import Any
 
 import yaml
 
-from .config import MaskSettings, ProcessSettings, ReachSettings, SwordSettings
+from .config import (
+    DischargeSettings,
+    MaskSettings,
+    ProcessSettings,
+    ReachSettings,
+    SwordSettings,
+)
 
 
 def _v(value: Any) -> str:
@@ -27,6 +33,7 @@ def render_config(
     r = {**ReachSettings().model_dump(), **(reaches or {})}
     m = {**MaskSettings().model_dump(), **(masks or {})}
     pr = {**ProcessSettings().model_dump(), **(process or {})}
+    d = DischargeSettings().model_dump()
     s = SwordSettings()
     return f"""\
 # RivMapper v2 project configuration
@@ -98,8 +105,8 @@ reaches:
   boundary_method: {_v(r["boundary_method"])}
   partition_spacing_m: {_v(r["partition_spacing_m"])}   # sample spacing for nearest_valley / nearest_centerline
 
-# Step 03: raw annual DSWE observation counts from Earth Engine (extract_masks),
-# then mask processing (planned). See docs/methods/masks.md.
+# Step 03: raw annual DSWE observation counts from Earth Engine (extract_masks).
+# See docs/methods/masks.md.
 masks:
   year_start: {_v(m["year_start"])}         # required: first calendar year to extract
   year_end: {_v(m["year_end"])}           # required: last calendar year to extract
@@ -107,12 +114,31 @@ masks:
   reach_end: {_v(m["reach_end"])}           # null = last reach
   chunk_px: {_v(m["chunk_px"])}           # download chunk size (pixels per side)
   min_chunk_px: {_v(m["min_chunk_px"])}        # chunks that hit EE memory/time limits are split down to this
+  workers: {_v(m["workers"])}               # reach-years requested from Earth Engine in parallel
+  # Scene screening (raw product v2): scenes with widespread false water on
+  # reference-dry pixels (far from the channel, never water in JRC GSW) are dropped.
+  screen_scenes: {_v(m["screen_scenes"])}
+  max_false_water: {_v(m["max_false_water"])}     # drop a scene above this share of DSWE 1-3 on reference-dry pixels
+  ref_dry_widths: {_v(m["ref_dry_widths"])}       # reference-dry pixels are at least this many channel widths from the reach line
+  min_ref_px: {_v(m["min_ref_px"])}           # scenes with fewer clear reference pixels are kept unjudged
+  screen_scale_m: {_v(m["screen_scale_m"])}       # scale of the screening statistics (m)
+  le07_gap_years: {_v(m["le07_gap_years"])}     # years in which SLC-off Landsat 7 is also used
+  screen_only: {_v(m["screen_only"])}         # true = write the scene manifest only (quick check, no downloads)
   # Used later by mask processing (not by extraction):
   dswe_level: {_v(m["dswe_level"])}          # water = DSWE class 1..dswe_level (1-4)
   percentile: {_v(m["percentile"])}          # per-pixel percentile of per-scene water (50 = median)
   min_pixels: {_v(m["min_pixels"])}
 
-# Step 04: raw counts → annual channel masks (process_masks; in development).
+# Step 04: modelled discharge on scene dates → stage flags (discharge; optional:
+# needs network access to the GEOGLOWS v2 bucket on AWS). See docs/methods/discharge.md.
+discharge:
+  search_km: {_v(d["search_km"])}            # search radius for GEOGLOWS links at each reach's downstream end
+  area_tolerance: {_v(d["area_tolerance"])}       # link and reach drainage areas must agree within this factor
+  low_stage_pctile: {_v(d["low_stage_pctile"])}    # scene-date discharge below this percentile → low_stage
+  high_stage_pctile: {_v(d["high_stage_pctile"])}   # ... above this percentile → high_stage
+  river_id: {_v(d["river_id"])}             # force one GEOGLOWS river id for every reach
+
+# Step 05: raw counts → annual channel masks (process_masks; in development).
 # Spatial settings are multiples of the reach's channel width W. See
 # docs/methods/processing.md.
 process:

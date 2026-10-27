@@ -147,16 +147,27 @@ def _rescale(image):
     return image.addBands(sr, None, True)
 
 
-def landsat_collection(geometry, start: str, end: str):
+def landsat_collection(geometry, start: str, end: str, le07_slc_off: bool = False):
     """Landsat 5/7/8/9 C2 L2 over ``geometry`` in [start, end), cloud-masked,
-    rescaled to reflectance, with harmonised band names."""
+    rescaled to reflectance, with harmonised band names.
+
+    Each image carries ``scene_id`` (its Landsat scene name, e.g.
+    ``LC08_096063_20200101``) and ``sensor`` (LT05/LE07/LC08/LC09).
+    Landsat 7 is only used before the scan-line-corrector failure, unless
+    ``le07_slc_off`` (gap years with too few other scenes).
+    """
     ee = _ee()
     parts = []
     for key, cid in COLLECTIONS.items():
         bands = _BANDS_L57 if key in ("LT05", "LE07") else _BANDS_L89
         col = ee.ImageCollection(cid).filterBounds(geometry).filterDate(start, end)
-        if key == "LE07":
+        if key == "LE07" and not le07_slc_off:
             col = col.filterDate(*LE07_DATES)
+        col = col.map(
+            lambda img, key=key: img.set(
+                {"scene_id": img.get("system:index"), "sensor": key}
+            )
+        )
         parts.append(col.select(bands, STANDARD_BANDS))
     merged = parts[0]
     for p in parts[1:]:
@@ -215,47 +226,141 @@ def dswe(image):
 
 
 COUNT_BANDS = ["n_obs", "n_wet_1", "n_wet_2", "n_wet_3", "n_wet_4"]
+# Raw product v2 adds the clear looks that came from Landsat 7.
+COUNT_BANDS_V2 = [*COUNT_BANDS, "n_obs_le07"]
 COUNT_MAX = 254  # counts are capped so 255 stays free for "no data"
+JRC_GSW = "JRC/GSW1_4/GlobalSurfaceWater"
 
 
-def dswe_counts(geometry, year: int):
+def dswe_counts(
+    geometry,
+    year: int,
+    scene_ids: list[str] | None = None,
+    le07_slc_off: bool = False,
+    bands: list[str] = COUNT_BANDS,
+):
     """Annual DSWE observation counts for ``year`` (calendar year).
 
-    Returns (image, n_scenes). The image has five uint8 bands, each a count
-    over all clear Landsat scenes in the year:
+    Returns (image, n_scenes). The image has uint8 bands, each a count over
+    the clear Landsat scenes in the year (all of them, or only
+    ``scene_ids`` when given):
 
     * ``n_obs``   clear observations (pixel not masked by QA_PIXEL);
-    * ``n_wet_k`` observations with DSWE class 1..k, for k = 1..4.
+    * ``n_wet_k`` observations with DSWE class 1..k, for k = 1..4;
+    * ``n_obs_le07`` (if requested) clear observations from Landsat 7.
 
     Any DSWE level and percentile can be applied later from these counts.
     """
     ee = _ee()
-    col = landsat_collection(geometry, f"{year}-01-01", f"{year + 1}-01-01")
+    col = landsat_collection(
+        geometry, f"{year}-01-01", f"{year + 1}-01-01", le07_slc_off=le07_slc_off
+    )
+    if scene_ids is not None:
+        col = col.filter(ee.Filter.inList("scene_id", ee.List(list(scene_ids))))
 
     def _per_scene(img):
         d = dswe(img)
-        return (
-            ee.Image.cat(
-                d.gte(0),
-                d.eq(1),
-                d.gte(1).And(d.lte(2)),
-                d.gte(1).And(d.lte(3)),
-                d.gte(1).And(d.lte(4)),
+        layers = [
+            d.gte(0),
+            d.eq(1),
+            d.gte(1).And(d.lte(2)),
+            d.gte(1).And(d.lte(3)),
+            d.gte(1).And(d.lte(4)),
+        ]
+        if "n_obs_le07" in bands:
+            is_le07 = ee.Number(
+                ee.Algorithms.If(ee.String(img.get("sensor")).equals("LE07"), 1, 0)
             )
-            .rename(COUNT_BANDS)
-            .unmask(0)
-        )
+            layers.append(d.gte(0).multiply(ee.Image.constant(is_le07)))
+        return ee.Image.cat(*layers).rename(bands).unmask(0)
 
     # When no scene touches ``geometry`` (possible for a single tile), summing
     # an empty collection gives an image with no bands; use all-zero counts
     # instead. (Chosen server-side with If: merging a constant image into the
     # collection fails EE's same-pixel-type check.)
-    zero = ee.Image.constant([0] * len(COUNT_BANDS)).rename(COUNT_BANDS)
+    zero = ee.Image.constant([0] * len(bands)).rename(bands)
     summed = ee.Image(
         ee.Algorithms.If(col.size().gt(0), col.map(_per_scene).sum(), zero)
     )
-    counts = summed.min(COUNT_MAX).toUint8().rename(COUNT_BANDS)
+    counts = summed.min(COUNT_MAX).toUint8().rename(bands)
     return counts, col.size()
+
+
+SCENE_FIELDS = [
+    "scene_id",
+    "sensor",
+    "time_ms",
+    "clear_frac",
+    "ref_px",
+    "ref_wet2_px",
+    "ref_wet3_px",
+]
+
+
+def scene_stats(
+    geometry,
+    ref_geometry,
+    year: int,
+    le07_slc_off: bool = False,
+    scale_m: float = 60.0,
+) -> list[dict]:
+    """Per-scene screening statistics for one reach-year (one EE call).
+
+    For every scene touching ``geometry`` in ``year``:
+
+    * ``clear_frac``: share of ``geometry`` that is clear in the scene;
+    * ``ref_px``: clear *reference-dry* pixels — inside ``ref_geometry``
+      (the reach polygon away from the channel) and never water in JRC
+      Global Surface Water (``max_extent`` = 0, 1984–2021);
+    * ``ref_wet2_px`` / ``ref_wet3_px``: of those, classified DSWE 1–2 /
+      1–3, i.e. false water.
+
+    Counted at ``scale_m`` (a rate, so a coarser scale is fine and cheaper).
+    """
+    ee = _ee()
+    col = landsat_collection(
+        geometry, f"{year}-01-01", f"{year + 1}-01-01", le07_slc_off=le07_slc_off
+    )
+    ref_dry = ee.Image(JRC_GSW).select("max_extent").unmask(0).eq(0)
+
+    def _stats(img):
+        d = dswe(img)
+        clear = d.gte(0).unmask(0).rename("clear")
+        ref = (
+            ee.Image.cat(d.gte(0), d.gte(1).And(d.lte(2)), d.gte(1).And(d.lte(3)))
+            .rename(["ref", "wet2", "wet3"])
+            .updateMask(ref_dry)
+        )
+        c = clear.reduceRegion(
+            ee.Reducer.mean(), geometry, scale_m, maxPixels=1e10, tileScale=4
+        )
+        r = ref.reduceRegion(
+            ee.Reducer.sum(), ref_geometry, scale_m, maxPixels=1e10, tileScale=4
+        )
+
+        def nz(v):  # an all-masked region reduces to null; report 0
+            return ee.Algorithms.If(ee.Algorithms.IsEqual(v, None), 0, v)
+
+        return ee.Feature(
+            None,
+            {
+                "scene_id": img.get("scene_id"),
+                "sensor": img.get("sensor"),
+                "time_ms": img.get("system:time_start"),
+                "clear_frac": nz(c.get("clear")),
+                "ref_px": nz(r.get("ref")),
+                "ref_wet2_px": nz(r.get("wet2")),
+                "ref_wet3_px": nz(r.get("wet3")),
+            },
+        )
+
+    rows = (
+        ee.FeatureCollection(col.map(_stats))
+        .reduceColumns(ee.Reducer.toList(len(SCENE_FIELDS)), SCENE_FIELDS)
+        .get("list")
+        .getInfo()
+    )
+    return [dict(zip(SCENE_FIELDS, r, strict=True)) for r in rows or []]
 
 
 # ─────────────────────────────────────────────────────────────────────

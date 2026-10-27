@@ -39,6 +39,7 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
+    field_validator,
     model_validator,
 )
 
@@ -188,6 +189,62 @@ class MaskSettings(_Section):
         ),
     )
     min_pixels: int = Field(200, ge=0)
+    # ── scene screening (raw product v2) ──
+    screen_scenes: bool = Field(
+        True, description="Drop scenes with widespread false water before counting."
+    )
+    max_false_water: float = Field(
+        0.02,
+        gt=0,
+        lt=1,
+        description=(
+            "A scene is dropped when more than this share of its clear "
+            "reference-dry pixels is classed DSWE 1-3."
+        ),
+    )
+    ref_dry_widths: float = Field(
+        10.0,
+        gt=0,
+        description=(
+            "Reference-dry pixels are at least this many channel widths from "
+            "the reach line (and never water in JRC Global Surface Water)."
+        ),
+    )
+    min_ref_px: int = Field(
+        500, ge=1, description="Scenes with fewer clear reference pixels are kept."
+    )
+    screen_scale_m: float = Field(60.0, ge=30, description="Scale for screening stats.")
+    le07_gap_years: list[int] = Field(
+        default_factory=lambda: [2012],
+        description=(
+            "Years in which Landsat 7 SLC-off scenes are also used (too few "
+            "other scenes). Landsat 7 is otherwise used only to May 2003."
+        ),
+    )
+    workers: int = Field(
+        4,
+        ge=1,
+        le=16,
+        description="Reach-years requested from Earth Engine in parallel.",
+    )
+    screen_only: bool = Field(
+        False,
+        description=(
+            "Write the scene manifest only (no downloads): a quick look at "
+            "screening before a full extraction."
+        ),
+    )
+
+    @field_validator("le07_gap_years", mode="before")
+    @classmethod
+    def _years_from_text(cls, v):
+        # rivers.csv cells arrive as text, e.g. "2012" or "2012;2013"
+        if isinstance(v, str):
+            parts = [x for x in v.replace(",", ";").split(";") if x.strip()]
+            return [int(float(x)) for x in parts]
+        if isinstance(v, int | float):
+            return [int(v)]
+        return v
 
     @model_validator(mode="after")
     def _ranges_ordered(self) -> MaskSettings:
@@ -264,11 +321,45 @@ class ProcessSettings(_Section):
         return self
 
 
+class DischargeSettings(_Section):
+    """Step ``discharge``: modelled discharge on scene dates (stage flag)."""
+
+    source: Literal["geoglows_v2"] = "geoglows_v2"
+    search_km: float = Field(
+        5.0, gt=0, description="Search radius for GEOGLOWS links around a reach end."
+    )
+    area_tolerance: float = Field(
+        2.0,
+        gt=1,
+        description=(
+            "A GEOGLOWS link matches a reach when their drainage areas differ by "
+            "less than this factor."
+        ),
+    )
+    low_stage_pctile: float = Field(
+        20.0,
+        ge=0,
+        le=100,
+        description="Scene-date discharge below this percentile → low_stage.",
+    )
+    high_stage_pctile: float = Field(
+        80.0,
+        ge=0,
+        le=100,
+        description="Scene-date discharge above this percentile → high_stage.",
+    )
+    river_id: int | None = Field(
+        None,
+        description="Use this GEOGLOWS river id for every reach (manual override).",
+    )
+
+
 # Sections whose fields may be overridden per river in the rivers table.
 OVERRIDABLE_SECTIONS: dict[str, type[_Section]] = {
     "reaches": ReachSettings,
     "masks": MaskSettings,
     "process": ProcessSettings,
+    "discharge": DischargeSettings,
 }
 OVERRIDE_COLUMNS: dict[str, str] = {
     field: section
@@ -318,6 +409,7 @@ class ProjectSettings(_Section):
     reaches: ReachSettings = Field(default_factory=ReachSettings)
     masks: MaskSettings = Field(default_factory=MaskSettings)
     process: ProcessSettings = Field(default_factory=ProcessSettings)
+    discharge: DischargeSettings = Field(default_factory=DischargeSettings)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -338,6 +430,7 @@ class River(BaseModel):
     reaches: ReachSettings
     masks: MaskSettings
     process: ProcessSettings = Field(default_factory=ProcessSettings)
+    discharge: DischargeSettings = Field(default_factory=DischargeSettings)
     overwrite: bool = False
     row_number: int | None = Field(
         None, description="Spreadsheet row in rivers.csv (header = row 1)."

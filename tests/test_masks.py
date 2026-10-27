@@ -63,19 +63,40 @@ class FakeEE:
     """10 clear scenes per year (none in 2003); water in a horizontal band.
 
     In the band: wet in 6 (class 1), 8 (1-2), 9 (1-3), 9 (1-4) of 10 scenes.
+    Screening: scene 7 of each year is hazy (5% false water on reference-dry
+    pixels); the others are clean. Counts ignore which scenes are kept.
     """
 
     def __init__(self):
         self.calls = []
+        self.fetched_ids = []
+        self.screened = []
 
-    def counts(self, geom, year):
+    def counts(self, geom, year, le07_slc_off=False):
         self.calls.append(year)
-        return {"year": year}
+        return {"year": year, "le07": le07_slc_off}
 
     def n_scenes(self, comp):
         return 0 if comp["year"] == 2003 else 10
 
-    def fetch(self, comp, grid):
+    def scenes(self, comp, ref, scale_m=60.0):
+        self.screened.append((comp["year"], ref.area > 0))
+        y = comp["year"]
+        return [
+            {
+                "scene_id": f"LC08_000000_{y}{k:04d}",
+                "sensor": "LC08",
+                "time_ms": 1e12 + k * 86400e3,
+                "clear_frac": 0.9,
+                "ref_px": 1000,
+                "ref_wet2_px": 30 if k == 7 else 2,
+                "ref_wet3_px": 50 if k == 7 else 5,
+            }
+            for k in range(10)
+        ]
+
+    def fetch(self, comp, grid, scene_ids=None):
+        self.fetched_ids.append(None if scene_ids is None else len(scene_ids))
         ys = grid.y0 - (np.arange(grid.height) + 0.5) * grid.res
         band = np.abs(ys - ys.mean())[:, None] < 300
         band = np.broadcast_to(band, (grid.height, grid.width))
@@ -125,19 +146,21 @@ def test_extract_counts_with_fake_backend(mask_project):
         2004,
     ]  # one per reach-year
     with rasterio.open(paths.raw_mask(1, 2002)) as src:
-        assert src.count == 5 and src.nodata == NODATA and src.dtypes[0] == "uint8"
+        assert src.count == 6 and src.nodata == NODATA and src.dtypes[0] == "uint8"
         assert [d.split(":")[0] for d in src.descriptions] == [
             "n_obs",
             "n_wet_1",
             "n_wet_2",
             "n_wet_3",
             "n_wet_4",
+            "n_obs_le07",
         ]
         assert src.crs.to_string().startswith("EPSG:327")
         assert src.transform.a == 30 and src.transform.c % 30 == 0
         assert src.tags()["n_scenes"] == "10"
-        assert json.loads(src.tags()["rivmapper_params"])["product"] == "dswe_counts_v1"
-        n_obs, w1, w2, w3, w4 = src.read()
+        assert json.loads(src.tags()["rivmapper_params"])["product"] == "dswe_counts_v2"
+        assert src.tags()["n_scenes_kept"] == "9"
+        n_obs, w1, w2, w3, w4, _le07 = src.read()
         inside = n_obs != NODATA
         assert (~inside).any() and inside.any()
         for b in (w1, w2, w3, w4):
@@ -159,6 +182,17 @@ def test_extract_counts_with_fake_backend(mask_project):
     assert len(log) == 6
     assert log.set_index(["ds_order", "year"]).loc[(1, 2003), "status"] == "no_imagery"
     assert (log.loc[log.status == "ok", "n_obs_median"] == 10).all()
+    ok = log[log.status == "ok"]
+    assert (ok.n_scenes_kept == 9).all() and (ok.n_scenes_dropped == 1).all()
+    # only the kept scenes were requested
+    assert set(fake.fetched_ids) == {9}
+    # scene manifest: every scene of every imaged reach-year, hazy ones dropped
+    man = pd.read_csv(paths.scene_manifest)
+    assert len(man) == 2 * 2 * 10  # 2 reaches x 2 imaged years x 10 scenes
+    assert (man.groupby(["ds_order", "year"]).kept.sum() == 9).all()
+    hazy = man[~man.kept.astype(bool)]
+    assert (hazy.reason == "false_water").all() and (hazy.false_rate3 == 0.05).all()
+    assert man.date.str.match(r"\d{4}-\d{2}-\d{2}").all()
 
     # Second run: everything already there.
     fake2 = FakeEE()
@@ -216,7 +250,7 @@ class MemoryLimitedEE(FakeEE):
         self.message = message
         self.requests = []
 
-    def fetch(self, comp, grid):
+    def fetch(self, comp, grid, scene_ids=None):
         self.requests.append((grid.width, grid.height))
         if grid.width * grid.height > self.max_px:
             raise RuntimeError(self.message)
@@ -346,3 +380,94 @@ def test_min_chunk_cannot_exceed_chunk(synthetic_project):
     )
     with pytest.raises(ConfigError, match="min_chunk_px"):
         Project.load(cfg)
+
+
+# ── scene screening (raw product v2) ────────────────────────────────────
+def test_screen_rule():
+    from rivmapper_v2.config import MaskSettings
+    from rivmapper_v2.masks import screen
+
+    m = MaskSettings(max_false_water=0.02, min_ref_px=100)
+    rows = screen(
+        [
+            {"scene_id": "a", "ref_px": 1000, "ref_wet2_px": 1, "ref_wet3_px": 10},
+            {"scene_id": "b", "ref_px": 1000, "ref_wet2_px": 5, "ref_wet3_px": 30},
+            {"scene_id": "c", "ref_px": 50, "ref_wet2_px": 50, "ref_wet3_px": 50},
+            {"scene_id": "d", "ref_px": 0, "ref_wet2_px": 0, "ref_wet3_px": 0},
+        ],
+        m,
+    )
+    assert [r["kept"] for r in rows] == [True, False, True, True]
+    assert rows[1]["reason"] == "false_water" and rows[1]["false_rate3"] == 0.03
+    assert rows[2]["reason"] == rows[3]["reason"] == "too_few_reference_px"
+    assert rows[3]["false_rate3"] is None
+
+
+def test_reference_zone_falls_back_to_half_distance():
+    from shapely.geometry import LineString, box
+
+    from rivmapper_v2.masks import reference_zone
+
+    line = LineString([(0, 500), (10000, 500)])
+    wide = box(0, -2000, 10000, 3000)
+    zone, k = reference_zone(wide, line, 100.0, 10, 1e6)
+    assert k == 10 and zone.distance(line) >= 999
+    narrow = box(0, -300, 10000, 1300)  # 800 m either side: only 5 W fits
+    zone, k = reference_zone(narrow, line, 100.0, 10, 1e6)
+    assert k == 5
+    zone, k = reference_zone(box(0, 300, 10000, 700), line, 100.0, 10, 1e6)
+    assert zone is None and k is None
+
+
+def test_screen_only_writes_manifest_not_masks(mask_project):
+    import pandas as pd
+
+    from rivmapper_v2 import masks
+
+    river = mask_project.river("Synth")
+    river.masks.screen_only = True
+    fake = FakeEE()
+    [res] = masks.run(mask_project, [river], backend=fake)
+    assert res.status == "ok" and "would be dropped" in res.message
+    assert not river.paths.raw_masks_dir.exists() or not any(
+        river.paths.raw_masks_dir.iterdir()
+    )
+    assert fake.fetched_ids == []
+    man = pd.read_csv(river.paths.scene_manifest)
+    assert len(man) == 40 and (~man.kept.astype(bool)).sum() == 4
+    # running it again does not duplicate rows
+    masks.run(mask_project, [river], backend=FakeEE())
+    assert len(pd.read_csv(river.paths.scene_manifest)) == 40
+
+
+def test_le07_gap_years_reach_the_backend(mask_project):
+    from rivmapper_v2 import masks
+
+    river = mask_project.river("Synth")
+    river.masks.le07_gap_years = [2004]
+    seen = []
+
+    class Spy(FakeEE):
+        def counts(self, geom, year, le07_slc_off=False):
+            seen.append((year, le07_slc_off))
+            return super().counts(geom, year, le07_slc_off)
+
+    masks.run(mask_project, [river], backend=Spy())
+    assert {y for y, le07 in seen if le07} == {2004}
+
+
+def test_raw_v1_files_are_stale_for_v2(mask_project):
+    """Existing v1 raw files must not be silently mixed with v2 ones."""
+    import yaml
+
+    from rivmapper_v2 import masks
+
+    river = mask_project.river("Synth")
+    [res] = masks.run(mask_project, [river], backend=FakeEE())
+    rec_path = river.paths.run_record("extract_masks")
+    rec = yaml.safe_load(rec_path.read_text())
+    rec["parameters"]["product"] = "dswe_counts_v1"
+    rec_path.write_text(yaml.safe_dump(rec))
+    river.paths.raw_mask(1, 2002).unlink()
+    [res] = masks.run(mask_project, [river], backend=FakeEE())
+    assert res.status == "stale" and "--overwrite" in res.message

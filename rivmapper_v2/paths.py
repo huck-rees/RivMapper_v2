@@ -28,7 +28,11 @@ subfolder per step::
         │   ├── qa/{river}_r{NNN}_qa.png         QA figures
         │   ├── {river}_process_masks_qa.csv     one row per reach-year
         │   └── {river}_process_masks_run.yaml
-        └── discharge/                           GEOGLOWS join + daily series
+        └── discharge/                           step: discharge
+            ├── {river}_geoglows_join.csv        reach → GEOGLOWS river id
+            ├── {river}_geoglows_daily.csv       daily discharge, one column per river id
+            ├── {river}_stage.csv                discharge on scene dates, per reach-year
+            └── {river}_discharge_run.yaml
 
 Shared external datasets (the continental SWORD files) live outside
 ``data_root``; see ``rivmapper_v2.data``.
@@ -41,7 +45,7 @@ from pathlib import Path
 
 # Pipeline steps in run order (kept here, dependency-free, so the CLI can
 # list them without importing the heavy step modules).
-STEP_NAMES = ("sword", "reaches", "extract_masks", "process_masks")
+STEP_NAMES = ("sword", "reaches", "extract_masks", "discharge", "process_masks")
 
 
 def sword_continent_files(
@@ -161,6 +165,18 @@ class RiverPaths:
     def discharge_dir(self) -> Path:
         return self.river_dir / "discharge"
 
+    @property
+    def discharge_join(self) -> Path:
+        return self.discharge_dir / f"{self.river}_geoglows_join.csv"
+
+    @property
+    def discharge_daily(self) -> Path:
+        return self.discharge_dir / f"{self.river}_geoglows_daily.csv"
+
+    @property
+    def stage_table(self) -> Path:
+        return self.discharge_dir / f"{self.river}_stage.csv"
+
     # ── provenance ──────────────────────────────────────────────────
     def run_record(self, step: str) -> Path:
         """Provenance YAML written next to a step's outputs."""
@@ -169,5 +185,6 @@ class RiverPaths:
             "reaches": self.reaches_dir,
             "extract_masks": self.masks_dir,
             "process_masks": self.masks_dir,
+            "discharge": self.discharge_dir,
         }[step]
         return folder / f"{self.river}_{step}_run.yaml"

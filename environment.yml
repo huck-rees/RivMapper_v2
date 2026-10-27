@@ -23,6 +23,11 @@ dependencies:
   - requests
   - tqdm
   - pooch>=1.8
+  # step discharge (GEOGLOWS v2 from AWS Open Data)
+  - xarray
+  - zarr
+  - s3fs
+  - pyarrow
   - pytest
   - pip
   - pip:
