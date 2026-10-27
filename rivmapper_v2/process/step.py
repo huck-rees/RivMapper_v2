@@ -260,31 +260,35 @@ def _window_year(paths, layout, window, years, t):
 
 
 def _process_window(river, layout, paths, window, years, status, env_thr, lines):
-    """Extract every year of one window. Returns per-year centre results."""
+    """Extract every year of one window.
+
+    Returns {year: None (no data) or dict(channel, core, stats, score,
+    rerun)}, with ``channel`` and ``core`` cropped to the centre reach's
+    grid. Only last year's full-window mask is held in memory, so memory
+    does not grow with the record length.
+    """
     s = river.process
-    W = layout.width_px(window.center)
+    o = window.center
+    W = layout.width_px(o)
     owner = layout.owner(window.grid, window.members)
     inside = owner > 0
-    centre = owner == window.center
+    g = layout.grids[o]
+    r0, c0 = offset(g, window.grid)
+    sub = (slice(r0, r0 + g.height), slice(c0, c0 + g.width))
+    centre = (owner == o)[sub]
     centerline = layout.rasterize_line(
         _lines_for(lines, window.members), window.grid, width_px=0
     )
     by_reach = {
-        int(o): g for o, g in zip(lines["ds_order"], lines.geometry, strict=True)
+        int(k): geom for k, geom in zip(lines["ds_order"], lines.geometry, strict=True)
     }
     term = layout.terminals(window, by_reach, inside, radius_px=max(10 * W, 20))
-    prev = None
-    masks = {}
-    results = {}
-    for t, y in enumerate(years):
-        st = status[window.center][y]
-        if st == qa.NO_DATA:
-            results[y] = None
-            continue
+
+    def inputs(t, prev):
         n_obs, n_wet_3, n_prev, p_ch, p_mg = _window_year(
             paths, layout, window, years, t
         )
-        inp = ChannelInputs(
+        return ChannelInputs(
             p_channel=p_ch,
             p_margin=p_mg,
             n_obs=n_obs,
@@ -296,36 +300,43 @@ def _process_window(river, layout, paths, window, years, status, env_thr, lines)
             width_px=W,
             terminals=term,
         )
-        res = extract(inp, s, env_thr)
-        results[y] = {
-            "res": res,
-            "inp_prev": prev,
-            "p_ch": p_ch,
-            "p_mg": p_mg,
-            "inp": inp,
+
+    def keep(res):
+        return {
+            "channel": res.channel[sub] & centre,
+            "core": res.core[sub] & centre,
+            "stats": res.stats,
         }
-        masks[y] = res.channel
+
+    prev = None
+    prev_used = {}  # the seed mask each year used, for reruns (centre crop only)
+    results = {}
+    for t, y in enumerate(years):
+        if status[o][y] == qa.NO_DATA:
+            results[y] = None
+            continue
+        res = extract(inputs(t, prev), s, env_thr)
+        prev_used[y] = prev
+        results[y] = keep(res)
         prev = res.channel
     # Pass 4: year-to-year check on the centre reach. Too much water is
     # rerun once with a stricter envelope threshold (it is usually false
     # water from bad scenes or a flood); too little is only flagged.
-    obs_years = [
-        y for y in years if status[window.center][y] in (qa.OBSERVED, qa.SPARSE)
-    ]
-    area = [float(results[y]["res"].channel[centre].sum()) for y in obs_years]
+    obs_years = [y for y in years if status[o][y] in (qa.OBSERVED, qa.SPARSE)]
+    area = [float(results[y]["channel"].sum()) for y in obs_years]
     scores = qa.outlier_scores(area, signed=True)
     for i, y in enumerate(obs_years):
         results[y]["score"] = float(scores[i])
         if scores[i] > s.outlier_mad:
             strict = min(env_thr + STRICT_STEP, 0.95)
-            res2 = extract(results[y]["inp"], s, strict)
+            t = years.index(y)
+            res2 = keep(extract(inputs(t, prev_used[y]), s, strict))
             a2 = list(area)
-            a2[i] = float(res2.channel[centre].sum())
+            a2[i] = float(res2["channel"].sum())
             sc2 = float(qa.outlier_scores(a2, signed=True)[i])
             results[y]["rerun"] = True
             if abs(sc2) < abs(scores[i]):
-                results[y]["res"] = res2
-                results[y]["score"] = sc2
+                results[y].update(res2, score=sc2)
     return centre, results
 
 
@@ -435,10 +446,9 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
             river, layout, p, window, years, status, env_thr, lines
         )
         g = layout.grids[o]
-        r0, c0 = offset(g, window.grid)
-        sub = (slice(r0, r0 + g.height), slice(c0, c0 + g.width))
-        inside = centre[sub]
+        inside = centre
         W = layout.width_px(o)
+        T = len(years)
         thumb_years = [y for y in years if status[o][y] == qa.OBSERVED]
         thumb_years = (
             [
@@ -461,16 +471,15 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
                 "coverage": round(float(info[o]["coverage"][t]), 4),
             }
             if res is not None:
-                ch = res["res"].channel[sub]
-                co = res["res"].core[sub]
-                pe = np.clip(res["p_ch"][sub] + res["p_mg"][sub], 0, 1)
-                pc = res["p_ch"][sub]
+                ch = res["channel"]
+                co = res["core"]
+                pc = _read_post_band(p, o, t + 1)
+                pm = _read_post_band(p, o, T + t + 1)
                 bands["channel"][inside] = ch[inside]
                 bands["core"][inside] = co[inside]
-                bands["p_envelope"][inside] = np.round(100 * pe[inside]).astype(
-                    np.uint8
-                )
-                bands["p_core"][inside] = np.round(100 * pc[inside]).astype(np.uint8)
+                pe = np.minimum(pc[inside].astype(np.int16) + pm[inside], 100)
+                bands["p_envelope"][inside] = pe.astype(np.uint8)
+                bands["p_core"][inside] = pc[inside]
                 px_km2 = layout.res**2 / 1e6
                 row.update(
                     channel_km2=round(float((ch & inside).sum() * px_km2), 4),
@@ -479,7 +488,7 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
                     rerun=bool(res.get("rerun", False)),
                     **{
                         k: v
-                        for k, v in res["res"].stats.items()
+                        for k, v in res["stats"].items()
                         if k
                         in (
                             "bridges_joined",
