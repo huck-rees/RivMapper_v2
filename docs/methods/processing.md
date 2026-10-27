@@ -104,7 +104,31 @@ Flags: `sparse`, `inferred`, `marginal` (W < 3 px), `unresolved` (W < 2 px), `ar
 
 ## Checks (phase 1)
 
-PHASE1_RESULTS
+**Synthetic rivers** (300 × 450 px, 1984–2026, Ok Tedi-like observation density; IoU against the known near-bankfull channel in observed years; A_R = new area visited within Δt years relative to the channel):
+
+| Scenario | IoU mean (min) | False channel, mean | A_R at Δt = 2, 5, 10 (processed / truth) |
+|---|---|---|---|
+| Migration only, W = 8 px | 0.94 (0.86) | 0.6% | 0.111/0.105, 0.278/0.262, 0.559/0.526 |
+| Neck cutoff, W = 8 px | 0.93 (0.86) | 0.7% | 0.118/0.112, 0.298/0.281, 0.597/0.564 |
+| Narrow, W = 3 px | 0.96 (0.88) | 1.2% | 0.234/0.229, 0.586/0.572, 1.172/1.146 |
+| Avulsion, W = 8 px | 0.91 (0.64) | 2.8% | 0.127/0.124, 0.323/0.313, 0.664/0.647 |
+
+The oxbow is removed from the first year after the cutoff. The avulsion's new course is mapped in its first year (89% of it); the low IoU years are the three in which the abandoned course is still wet and joined at both ends, which is mapped by design (anabranch). A single-year threshold on the same synthetic river scores IoU 0.75.
+
+**Ok Tedi** (20 reaches, 1984–2026, 860 reach-years: 758 observed, 16 sparse, 26 inferred, 60 no data; about 75 min on 2 CPUs). Against a single-year baseline (wet in ≥ 50% of clear looks, components touching the reach line), over observed years:
+
+| | Baseline | Processed |
+|---|---|---|
+| Area CV per reach, median of 20 | 0.56 | 0.17 |
+| Median year-to-year area change | 26% | 5% |
+
+27 reach-years are flagged as area outliers. Most are stage, not mapping error: the lower reaches (15–19) are high in 1999–2000 and low in 2015, the El Niño drought year when the Fly was too low for shipping.
+
+Known limits, for phases 2–3:
+
+- The upper Ok Tedi (reaches 1–4, W = 3.5–3.7 px) never forms one path between its window's terminals, so the fallback (all seeded pieces) applies. Masks are clean (typically 1–4 pieces against 10–30 for the baseline) but not strictly continuous.
+- Floodplain water joined to the channel through a neighbouring reach, or reaching a cut line, survives in some wet years on the lower Ok Tedi (e.g. reach 16 in 2009–2011 and 2017–2019). The channel-belt / HAND corridor (phase 3) targets this; the stage flag (phase 2) will separate stage-driven area changes from mapping errors.
+- A tributary entering at the top of reach 2 is kept in some years (tributary handling: phase 3).
 
 ## Settings
 
