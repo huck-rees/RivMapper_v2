@@ -207,15 +207,7 @@ def fetch(
     log.info("Downloading %s %s%s to %s", ds.title, ds.version, size, dest)
     archive_name = Path(ds.url).name
     try:
-        archive = Path(
-            pooch.retrieve(
-                ds.url,
-                known_hash=ds.hash,
-                fname=archive_name,
-                path=dest,
-                progressbar=True,
-            )
-        )
+        archive = Path(_retrieve(pooch, ds, archive_name, dest))
     except ValueError as e:  # pooch raises ValueError on hash mismatch
         raise RuntimeError(
             f"{ds.title} download failed its checksum: {e}. If the archive was "
@@ -236,6 +228,46 @@ def fetch(
     _write_manifest(ds, dest)
     log.info("%s %s ready in %s", ds.title, ds.version, dest)
     return dest
+
+
+DOWNLOAD_TIMEOUT_S = 300  # some data servers take minutes before sending
+DOWNLOAD_TRIES = 4
+
+
+def _retrieve(pooch, ds: Dataset, fname: str, dest: Path, sleep=None) -> str:
+    """pooch.retrieve with a long timeout and retries on network errors."""
+    import time
+
+    import requests
+
+    sleep = sleep or time.sleep
+    downloader = pooch.HTTPDownloader(progressbar=True, timeout=DOWNLOAD_TIMEOUT_S)
+    for attempt in range(1, DOWNLOAD_TRIES + 1):
+        try:
+            return pooch.retrieve(
+                ds.url,
+                known_hash=ds.hash,
+                fname=fname,
+                path=dest,
+                downloader=downloader,
+            )
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            if attempt == DOWNLOAD_TRIES:
+                raise RuntimeError(
+                    f"{ds.title}: download failed {DOWNLOAD_TRIES} times ({e}). "
+                    f"Download it in a browser from {ds.url} and put it in {dest} "
+                    f"(keep the file name)."
+                ) from None
+            wait = 30 * attempt
+            log.warning(
+                "  download interrupted (%s); retry %d/%d in %d s",
+                type(e).__name__,
+                attempt,
+                DOWNLOAD_TRIES - 1,
+                wait,
+            )
+            sleep(wait)
+    raise AssertionError("unreachable")
 
 
 def _unzip_flat(archive: Path, dest: Path, pattern: str) -> None:

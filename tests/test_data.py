@@ -39,7 +39,7 @@ def fake_download(tmp_path, monkeypatch):
         zf.writestr("SWORD_v17b_gpkg/README.txt", "readme")
     calls = []
 
-    def retrieve(url, known_hash, fname, path, progressbar):
+    def retrieve(url, known_hash, fname, path, downloader=None, progressbar=True):
         calls.append(url)
         dest = path / fname
         dest.write_bytes(src.read_bytes())
@@ -101,3 +101,34 @@ def test_version_does_not_import_heavy_libraries():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     assert "HEAVY=\n" in out.stdout, f"--version imported: {out.stdout}"
+
+
+def test_download_retries_then_explains(tmp_path, monkeypatch):
+    import pooch
+    import requests
+
+    from rivmapper_v2 import data
+
+    calls = []
+
+    def flaky(url, **kw):
+        calls.append(kw["downloader"].kwargs.get("timeout"))
+        if len(calls) < 3:
+            raise requests.exceptions.ReadTimeout("slow")
+        (tmp_path / "f.nc").write_text("x")
+        return str(tmp_path / "f.nc")
+
+    monkeypatch.setattr(pooch, "retrieve", flaky)
+    ds = data.get_dataset("glofas_uparea", "5.0")
+    out = data._retrieve(pooch, ds, "f.nc", tmp_path, sleep=lambda s: None)
+    assert out.endswith("f.nc") and len(calls) == 3
+    assert calls[0] == data.DOWNLOAD_TIMEOUT_S
+
+    def dead(url, **kw):
+        raise requests.exceptions.ConnectTimeout("down")
+
+    monkeypatch.setattr(pooch, "retrieve", dead)
+    import pytest
+
+    with pytest.raises(RuntimeError, match="browser"):
+        data._retrieve(pooch, ds, "f.nc", tmp_path, sleep=lambda s: None)
