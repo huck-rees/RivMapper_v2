@@ -106,6 +106,68 @@ def _parameters(river: River, raw_fp: dict) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Checkpoints: an interrupted run resumes where it stopped
+# ─────────────────────────────────────────────────────────────────────
+def _run_key(params: dict) -> str:
+    """Short fingerprint of the settings; checkpoints only match the same key."""
+    import hashlib
+
+    blob = json.dumps(params, sort_keys=True, default=str).encode()
+    return hashlib.sha1(blob).hexdigest()[:10]
+
+
+def _ckpt(paths, name: str, key: str) -> Path:
+    return paths.model_dir / f"{paths.river}_{name}_{key}"
+
+
+def _save_hmm(path: Path, params: hmm.HMMParams) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "theta": params.theta.tolist(),
+                "A": params.A.tolist(),
+                "pi": params.pi.tolist(),
+                "loglik": params.loglik,
+                "iterations": params.iterations,
+                "notes": params.notes,
+            }
+        )
+    )
+
+
+def _load_hmm(path: Path) -> hmm.HMMParams:
+    d = json.loads(path.read_text())
+    return hmm.HMMParams(
+        theta=np.array(d["theta"]),
+        A=np.array(d["A"]),
+        pi=np.array(d["pi"]),
+        loglik=d["loglik"],
+        iterations=d["iterations"],
+        notes=d["notes"],
+    )
+
+
+def _thumbs_from_disk(paths, o, thumb_years) -> dict:
+    import rasterio
+
+    out = {}
+    for y in thumb_years:
+        with rasterio.open(paths.processed_mask(o, y)) as src:
+            ch, co = src.read(1), src.read(2)
+        inside = ch != NODATA
+        out[y] = (ch == 1, co == 1, inside)
+    return out
+
+
+def _thumb_years(years, status_o) -> list[int]:
+    obs = [y for y in years if status_o[y] == qa.OBSERVED]
+    if len(obs) < 6:
+        return obs
+    return [obs[i] for i in np.linspace(0, len(obs) - 1, 6).round().astype(int)]
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Passes 1–2: HMM
 # ─────────────────────────────────────────────────────────────────────
 def _sample(layout, paths, years, n_target, rng) -> np.ndarray:
@@ -174,10 +236,18 @@ def _write_posterior(path: Path, grid: Grid, years, p_ch, p_mg, inside) -> None:
     tmp.replace(path)
 
 
-def _posteriors(layout, paths, years, params) -> dict[int, dict]:
-    """Pass 2: posteriors + coverage per reach. Returns {ds_order: info}."""
+def _posteriors(layout, paths, years, params, key: str) -> dict[int, dict]:
+    """Pass 2: posteriors + coverage per reach. Returns {ds_order: info}.
+
+    Reaches whose posteriors were already written under the same ``key``
+    are not recomputed.
+    """
     info = {}
     for o in layout.ds_orders:
+        done = _ckpt(paths, f"r{o:03d}_coverage", key).with_suffix(".json")
+        if done.exists() and paths.posterior(o).exists():
+            info[o] = json.loads(done.read_text())
+            continue
         g, st = read_reach_stack(paths, o, years, RAW_BANDS)
         inside = st["n_obs"][0] != NODATA
         obs = hmm.observations(*(st[b][:, inside] for b in RAW_BANDS))
@@ -187,7 +257,8 @@ def _posteriors(layout, paths, years, params) -> dict[int, dict]:
         coverage = [
             (st["n_obs"][t][inside] > 0).sum() / n_in for t in range(len(years))
         ]
-        info[o] = {"coverage": coverage, "inside_px": n_in}
+        info[o] = {"coverage": [float(c) for c in coverage], "inside_px": n_in}
+        done.write_text(json.dumps(info[o]))
     return info
 
 
@@ -427,11 +498,20 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
     env_thr, env_note = _envelope_threshold(river)
     rng = np.random.default_rng(0)
 
-    log.info("  fitting %d-state HMM on %d sampled pixels", s.states, s.fit_sample_px)
-    sample = _sample(layout, p, years, s.fit_sample_px, rng)
-    params_hmm = hmm.fit(sample, s.states)
+    key = _run_key(params)
+    hmm_file = _ckpt(p, "hmm", key).with_suffix(".json")
+    if hmm_file.exists():
+        log.info("  resuming: HMM and finished reaches from an interrupted run")
+        params_hmm = _load_hmm(hmm_file)
+    else:
+        log.info(
+            "  fitting %d-state HMM on %d sampled pixels", s.states, s.fit_sample_px
+        )
+        sample = _sample(layout, p, years, s.fit_sample_px, rng)
+        params_hmm = hmm.fit(sample, s.states)
+        _save_hmm(hmm_file, params_hmm)
     log.info("  posteriors for %d reaches", len(layout.ds_orders))
-    info = _posteriors(layout, p, years, params_hmm)
+    info = _posteriors(layout, p, years, params_hmm, key)
     status = {
         o: qa.year_status(years, info[o]["coverage"], s.max_infer_gap)
         for o in layout.ds_orders
@@ -442,6 +522,14 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
     thumbs_all = {}
     for window in layout.windows():
         o = window.center
+        rows_file = _ckpt(p, f"r{o:03d}_rows", key).with_suffix(".csv")
+        if rows_file.exists() and all(p.processed_mask(o, y).exists() for y in years):
+            done = pd.read_csv(rows_file, keep_default_na=False, na_values=[""])
+            done["flags"] = done["flags"].fillna("").astype(str)
+            rows.extend(done.to_dict("records"))
+            thumbs_all[o] = _thumbs_from_disk(p, o, _thumb_years(years, status[o]))
+            log.info("  reach %d: already done", o)
+            continue
         centre, results = _process_window(
             river, layout, p, window, years, status, env_thr, lines
         )
@@ -449,15 +537,7 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
         inside = centre
         W = layout.width_px(o)
         T = len(years)
-        thumb_years = [y for y in years if status[o][y] == qa.OBSERVED]
-        thumb_years = (
-            [
-                thumb_years[i]
-                for i in np.linspace(0, len(thumb_years) - 1, 6).round().astype(int)
-            ]
-            if len(thumb_years) >= 6
-            else thumb_years
-        )
+        thumb_years = _thumb_years(years, status[o])
         thumbs = {}
         for t, y in enumerate(years):
             res = results[y]
@@ -519,6 +599,9 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
             )
             rows.append(row)
         thumbs_all[o] = thumbs
+        pd.DataFrame([r for r in rows if r["ds_order"] == o]).to_csv(
+            rows_file, index=False
+        )
         log.info(
             "  reach %d: %d years, %d rerun, %d flagged outliers",
             o,
@@ -566,6 +649,8 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
         outputs={"processed": p.processed_masks_dir, "qa_table": p.process_qa_table},
         summary=summary,
     )
+    for f in p.model_dir.glob(f"{p.river}_r*_rows_{key}.csv"):
+        f.unlink()  # finished: per-reach checkpoints are in the QA table now
     return StepResult(
         river.name,
         STEP,

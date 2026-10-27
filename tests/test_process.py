@@ -382,6 +382,44 @@ def test_process_step_end_to_end(tmp_path):
     assert again.iloc[0]["status"] == "skipped"
 
 
+def test_process_step_resumes_after_interruption(tmp_path, caplog):
+    import logging
+
+    import pandas as pd
+
+    river = make_river([], shape=(100, 160), width_px=5, seed=4)
+    project = Project.load(river.write_project(tmp_path))
+    r = project.river("Synth")
+    assert run_pipeline(project, steps=["process_masks"]).iloc[0]["status"] == "ok"
+    full = pd.read_csv(r.paths.process_qa_table)
+    # simulate a run killed while reach 3 was being written: reaches 1-2
+    # finished (row checkpoints present), no run record or QA table yet
+    from rivmapper_v2.process import step
+
+    key = step._run_key(
+        step._parameters(r, step._raw_fingerprint(r.paths.raw_mask(1, river.years[0])))
+    )
+    for o in (1, 2):
+        part = full[full.ds_order == o]
+        part.to_csv(
+            step._ckpt(r.paths, f"r{o:03d}_rows", key).with_suffix(".csv"), index=False
+        )
+    r.paths.run_record("process_masks").unlink()
+    r.paths.process_qa_table.unlink()
+    r.paths.processed_mask(3, river.years[-1]).unlink()
+    with caplog.at_level(logging.INFO, logger="rivmapper_v2.process.step"):
+        res = run_pipeline(project, steps=["process_masks"]).iloc[0]
+    assert res["status"] == "ok", res["message"]
+    assert "resuming" in caplog.text
+    assert caplog.text.count("already done") == 2
+    again = pd.read_csv(r.paths.process_qa_table)
+    pd.testing.assert_frame_equal(
+        again[["ds_order", "year", "status", "channel_km2"]],
+        full[["ds_order", "year", "status", "channel_km2"]],
+    )
+    assert not list(r.paths.model_dir.glob("*_rows_*.csv"))
+
+
 def test_process_step_reports_missing_raw(synth_project):
     river = synth_project.river("Synth")
     river.paths.raw_mask(2, 2001).unlink()
