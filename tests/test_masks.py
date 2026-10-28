@@ -522,3 +522,27 @@ def test_rate_limit_errors_are_retried():
         )
     with pytest.raises(ValueError):  # other errors are not retried
         with_rate_retry(lambda: (_ for _ in ()).throw(ValueError("bad")), sleep=print)
+
+
+def test_outdated_files_are_redone_without_overwrite(mask_project):
+    """A file left by an older product (e.g. after a failed reach-year) must
+    not let the step report 'skipped'."""
+    import rasterio
+
+    from rivmapper_v2 import masks
+
+    river = mask_project.river("Synth")
+    [res] = masks.run(mask_project, [river], backend=FakeEE())
+    assert res.status == "ok"
+    path = river.paths.raw_mask(1, 2002)
+    with rasterio.open(path, "r+") as dst:
+        tags = dst.tags()
+        fp = json.loads(tags["rivmapper_params"])
+        fp["product"] = "dswe_counts_v1"
+        dst.update_tags(rivmapper_params=json.dumps(fp))
+    fake = FakeEE()
+    [res] = masks.run(mask_project, [river], backend=fake)
+    assert res.status == "ok" and fake.calls == [2002]
+    assert json.loads(rasterio.open(path).tags()["rivmapper_params"])["product"] == (
+        "dswe_counts_v2"
+    )

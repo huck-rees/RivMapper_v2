@@ -662,6 +662,20 @@ def extract_masks(
     existing = check_existing(
         river.name, STEP, outputs, p.run_record(STEP), params, river.overwrite
     )
+    # "All outputs exist" is not enough: files left from a failed reach-year
+    # or an older product version carry a different fingerprint. Only skip
+    # the step when every file matches the current settings.
+    if existing is not None and existing.status != STALE:
+        fp_now = _fingerprint(river, crs)
+        outdated = [o for o in outputs if _read_fingerprint(o) != fp_now]
+        if outdated:
+            log.info(
+                "  %d of %d raw files are from other settings or a failed run; "
+                "redoing them",
+                len(outdated),
+                len(outputs),
+            )
+            existing = None
     if existing:
         return existing
     # Partly done with *different* settings: don't silently mix old and new.
