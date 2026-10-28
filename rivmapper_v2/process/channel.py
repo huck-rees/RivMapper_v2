@@ -145,6 +145,7 @@ def _reconnect(
     p_env: np.ndarray,
     max_len_px: float,
     min_piece_px: float = 0,
+    nrbc: bool = True,
 ) -> tuple[np.ndarray, int]:
     """Join core pieces to the network (``seeded``) by least-cost paths.
 
@@ -184,7 +185,7 @@ def _reconnect(
         # NRBC rule (Zeng et al. 2015): a piece must be at least twice as
         # long as the gap it bridges; piece length = its bounding diagonal.
         piece_len = math.hypot(*piece.shape)
-        if length <= max_len_px and length <= 0.5 * piece_len:
+        if length <= max_len_px and (not nrbc or length <= 0.5 * piece_len):
             bridges[path[:, 0], path[:, 1]] = True
             joined += 1
     return bridges, joined
@@ -398,17 +399,28 @@ def extract(
         blob = grown & (ndi.distance_transform_edt(~thick) <= rp + 1)
         on_line = ndi.binary_dilation(inp.centerline, EIGHT, iterations=2)
         blob_off = blob & ~_keep_touching(blob, on_line)
-        if blob_off.any():
-            # keep a channel-wide corridor along the skeleton through the
-            # blob: a channel crossing a wet patch must not be cut (a lake
-            # beside the channel becomes a spur, pruned as a dead end below)
-            from skimage.morphology import skeletonize
-
-            skel = skeletonize(grown)
-            blob_off &= ndi.distance_transform_edt(~skel) > max(0.5 * W, 1.0)
         candidate = _keep_touching(grown & ~blob_off, net & ~blob_off)
+        if through and blob_off.any() and not _touches_two_terminals(candidate, term):
+            # The removal cut the river (a wet patch lying on the channel):
+            # bridge across the removed pixels (any length; only through the
+            # patch itself) by the least-cost route, at
+            # channel width, then keep the rest of the patch removed.
+            rest = grown & ~blob_off
+            start = _start_piece(rest, rest, term)
+            bridge = np.zeros_like(rest)
+            for _ in range(4):
+                reached = _keep_touching(rest | bridge, start)
+                # no NRBC length rule: the piece beyond the patch can be short
+                b, j = _reconnect(rest, reached, blob_off, p_env, 50 * W, W, nrbc=False)
+                if j == 0:
+                    break
+                bridge |= b
+            if bridge.any() and W >= 2:
+                bridge = ndi.binary_dilation(bridge, _disk(int(W // 2))) & blob_off
+            blob_off &= ~bridge
+            candidate = _keep_touching(grown & ~blob_off, net & ~blob_off)
         if through and not _touches_two_terminals(candidate, term):
-            blob_off[:] = False  # removal would disconnect the river: undo
+            blob_off[:] = False  # still disconnected: undo the removal
             candidate = grown
         removed_wide = int(blob_off.sum())
         wide_mask = grown & ~candidate

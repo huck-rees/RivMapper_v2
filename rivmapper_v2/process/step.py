@@ -638,10 +638,14 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
     for window in layout.windows():
         o = window.center
         rows_file = _ckpt(p, f"r{o:03d}_rows", key).with_suffix(".csv")
-        if rows_file.exists() and all(
-            p.processed_mask(o, y).exists()
-            and (not s.keep_diagnostics or p.diagnostic(o, y).exists())
-            for y in years
+        if (
+            not river.overwrite
+            and rows_file.exists()
+            and all(
+                p.processed_mask(o, y).exists()
+                and (not s.keep_diagnostics or p.diagnostic(o, y).exists())
+                for y in years
+            )
         ):
             done = pd.read_csv(rows_file, keep_default_na=False, na_values=[""])
             done["flags"] = done["flags"].fillna("").astype(str)
