@@ -59,7 +59,13 @@ DATASET = "cems-glofas-historical"
 DATASET_PAGE = "https://ewds.climate.copernicus.eu/datasets/cems-glofas-historical"
 LICENCE_PAGE = DATASET_PAGE + "?tab=download#manage-licences"
 PROFILE_PAGE = "https://ewds.climate.copernicus.eu/profile"
-VARIABLE = "river_discharge_in_the_last_24_hours"
+# EWDS request keys changed with the move from the CDS: "current" is the
+# form in ECMWF's EWDS API examples (year/month/day, "average_..." variable,
+# timespan); "legacy" is the older CDS form. Requests try current first and
+# fall back to legacy if EWDS rejects the combination.
+VARIABLE = "average_river_discharge_in_the_last_24_hours"
+LEGACY_VARIABLE = "river_discharge_in_the_last_24_hours"
+SCHEMAS = ("current", "legacy")
 
 CELL_DEG = 0.05  # GloFAS v4/v5 grid spacing
 TIME_SHIFT = pd.Timedelta(days=-1)  # valid_time = end of the 24 h mean
@@ -69,7 +75,7 @@ SNAP_DEG = 0.5  # ... snapped outward to this grid (stable across reruns)
 _LAT_NAMES = ("latitude", "lat", "y")
 _LON_NAMES = ("longitude", "lon", "x")
 _TIME_NAMES = ("valid_time", "time")
-_Q_NAMES = ("dis24", "dis", VARIABLE)
+_Q_NAMES = ("dis24", "avg_dis24", "dis", "avg_dis", VARIABLE, LEGACY_VARIABLE)
 
 Retrieve = Callable[[dict, Path], None]
 
@@ -123,21 +129,55 @@ def request_area(lons: Iterable[float], lats: Iterable[float]) -> list[float]:
 
 
 def build_request(
-    system_version: str, product_type: str, year: int, area: list[float]
+    system_version: str,
+    product_type: str,
+    year: int,
+    area: list[float],
+    schema: str = "current",
 ) -> dict:
-    """One EWDS request: one year of daily discharge over ``area``, NetCDF."""
-    return {
+    """One EWDS request: one year of daily discharge over ``area``, NetCDF.
+
+    ``schema`` picks the key names (see ``SCHEMAS``).
+    """
+    months = [f"{m:02d}" for m in range(1, 13)]
+    days = [f"{d:02d}" for d in range(1, 32)]
+    req = {
         "system_version": [system_version],
         "hydrological_model": ["lisflood"],
         "product_type": [product_type],
-        "variable": [VARIABLE],
-        "hyear": [str(year)],
-        "hmonth": [f"{m:02d}" for m in range(1, 13)],
-        "hday": [f"{d:02d}" for d in range(1, 32)],
         "data_format": "netcdf",
         "download_format": "unarchived",
         "area": area,
     }
+    if schema == "current":
+        req.update(
+            variable=[VARIABLE],
+            timespan=["time_mean"],
+            year=[str(year)],
+            month=months,
+            day=days,
+        )
+    elif schema == "legacy":
+        req.update(
+            variable=[LEGACY_VARIABLE],
+            hyear=[str(year)],
+            hmonth=months,
+            hday=days,
+        )
+    else:
+        raise ValueError(f"unknown request schema {schema!r}; choose from {SCHEMAS}")
+    return req
+
+
+def request_year(request: dict) -> int:
+    """The year a request asks for, whichever schema it uses."""
+    return int((request.get("year") or request.get("hyear"))[0])
+
+
+def is_invalid_combination(exc: BaseException) -> bool:
+    """EWDS's answer to a request whose keys/values it does not accept."""
+    low = str(exc).lower()
+    return "valid combination" in low or ("400" in low and "invalid request" in low)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -187,7 +227,17 @@ def _standardise(ds, path: Path):
 
 
 def _discharge_var(ds) -> str | None:
-    return next((n for n in _Q_NAMES if n in ds.data_vars), None)
+    """Name of the discharge variable: a known name, else the only gridded one."""
+    name = next((n for n in _Q_NAMES if n in ds.data_vars), None)
+    if name is not None:
+        return name
+    lat = {"lat", "latitude"}
+    gridded = [
+        v
+        for v in ds.data_vars
+        if ds[v].ndim >= 2 and lat & set(ds[v].dims) and "upArea" not in v
+    ]
+    return gridded[0] if len(gridded) == 1 else None
 
 
 @dataclass(frozen=True)
@@ -377,6 +427,22 @@ def api_key_problem() -> str | None:
     return f"{rc} has no 'key:' line: {_setup_text()}"
 
 
+def _unzip_if_needed(path: Path) -> None:
+    """If EWDS sent a zip (it sometimes ignores 'unarchived'), keep the .nc."""
+    import zipfile
+
+    if not zipfile.is_zipfile(path):
+        return
+    with zipfile.ZipFile(path) as zf:
+        members = [m for m in zf.namelist() if m.lower().endswith((".nc", ".nc4"))]
+        if len(members) != 1:
+            raise RuntimeError(
+                f"{path.name}: expected one NetCDF file in the zip, found {members}"
+            )
+        data = zf.read(members[0])
+    path.write_bytes(data)
+
+
 def ewds_retrieve(request: dict, target: Path) -> None:
     """Download one request from EWDS to ``target`` (blocking).
 
@@ -441,6 +507,7 @@ class Glofas:
         retrieve: Retrieve | None = None,
     ):
         self.cache_file = cache_file
+        self._schema: str | None = None  # request form EWDS accepted
         self.version = version
         self.product_type = product_type
         self.glofas_dir = Path(glofas_dir) if glofas_dir else None
@@ -546,7 +613,6 @@ class Glofas:
 
     def _download(self, year: int, lons, lats, path: Path) -> None:
         area = request_area(lons, lats)
-        request = build_request(self.system_version, self.product_type, year, area)
         log.info(
             "  GloFAS v%s %s %d, area %s: requesting from EWDS",
             self.version,
@@ -556,8 +622,26 @@ class Glofas:
         )
         path.parent.mkdir(parents=True, exist_ok=True)
         part = path.with_name(path.name + ".part")
-        part.unlink(missing_ok=True)
-        self.retrieve(request, part)
+        schemas = [self._schema] if self._schema else list(SCHEMAS)
+        for i, schema in enumerate(schemas):
+            request = build_request(
+                self.system_version, self.product_type, year, area, schema
+            )
+            part.unlink(missing_ok=True)
+            try:
+                self.retrieve(request, part)
+            except Exception as e:
+                if i + 1 < len(schemas) and is_invalid_combination(e):
+                    log.info(
+                        "  EWDS rejected the %s request form; trying %s",
+                        schema,
+                        schemas[i + 1],
+                    )
+                    continue
+                raise
+            self._schema = schema  # remember what works for later years
+            break
+        _unzip_if_needed(part)
         part.replace(path)  # only complete downloads get the final name
 
     def describe(self) -> dict:
@@ -567,6 +651,7 @@ class Glofas:
             "doi": "10.24381/cds.a4fdd6b9",
             "system_version": self.system_version,
             "product_type": self.product_type,
+            "request_form": self._schema,
             "variable": VARIABLE,
             "time_convention": (
                 "valid_time is the end of the 24 h mean; dates = valid_time - 1 day"

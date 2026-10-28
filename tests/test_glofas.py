@@ -21,6 +21,7 @@ from rivmapper_v2.glofas import (
     Glofas,
     GlofasAccessError,
     build_request,
+    request_year,
     cell_center,
     cell_id,
     cell_index,
@@ -116,8 +117,9 @@ class FakeEWDS:
 
     def __call__(self, request: dict, target) -> None:
         self.calls.append(request)
-        assert request["variable"] == ["river_discharge_in_the_last_24_hours"]
-        year = int(request["hyear"][0])
+        assert request["variable"] == ["average_river_discharge_in_the_last_24_hours"]
+        assert request["timespan"] == ["time_mean"]
+        year = request_year(request)
         n, w, s, e = request["area"]
         first = pd.Timestamp(f"{year}-01-01") + pd.Timedelta(days=int(self.valid_end))
         valid = pd.date_range(first, periods=366 if year % 4 == 0 else 365, freq="D")
@@ -131,7 +133,7 @@ def lines(stage_project):
 
 
 def no_download(request, target):
-    raise AssertionError(f"unexpected download: {request['hyear']}")
+    raise AssertionError(f"unexpected download: {request_year(request)}")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -145,8 +147,11 @@ def test_cells_and_request():
     area = request_area([-59.81, -59.31], [-10.01, -9.92])
     assert area == [-9.5, -60.0, -10.5, -59.0]  # N, W, S, E, snapped to 0.5°
     req = build_request("version_4_0", "consolidated", 2005, area)
-    assert req["hyear"] == ["2005"] and len(req["hmonth"]) == 12
-    assert req["hday"][0] == "01" and req["hday"][-1] == "31"
+    assert req["year"] == ["2005"] and len(req["month"]) == 12
+    assert req["day"][0] == "01" and req["day"][-1] == "31"
+    old = build_request("version_4_0", "consolidated", 2005, area, schema="legacy")
+    assert old["hyear"] == ["2005"] and "year" not in old
+    assert old["variable"] == ["river_discharge_in_the_last_24_hours"]
     assert req["data_format"] == "netcdf" and req["hydrological_model"] == ["lisflood"]
 
 
@@ -220,7 +225,7 @@ def test_daily_downloads_once_per_year_then_uses_cache(lines, tmp_path, valid_en
 
     src = make(ewds)
     q = src.daily(ids, "2002-01-01", "2004-12-31")
-    assert [c["hyear"] for c in ewds.calls] == [["2002"], ["2003"], ["2004"]]
+    assert [request_year(c) for c in ewds.calls] == [2002, 2003, 2004]
     assert sorted(p.name for p in (tmp_path / "cache").iterdir()) == [
         "Synth_2002.nc",
         "Synth_2003.nc",
@@ -260,7 +265,7 @@ def test_local_glofas_dir_is_read_first(lines, tmp_path):
         retrieve=ewds,
     )
     q = src.daily(ids, "2002-01-01", "2004-12-31")
-    assert [c["hyear"] for c in ewds.calls] == [["2004"]]  # only the missing year
+    assert [request_year(c) for c in ewds.calls] == [2004]  # only the missing year
     assert src.uparea_path().name == "uparea_glofas_v4_0.nc"
     used = src.describe()["files"]
     assert used["local"] == ["glofas_v4_2002_2003.nc"] and len(used["downloaded"]) == 1
@@ -356,3 +361,40 @@ def test_licence_and_client_errors(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "ecmwf.datastores", None)  # not installed
     with pytest.raises(GlofasAccessError, match="ecmwf-datastores-client"):
         glofas.ewds_retrieve({}, tmp_path / "x.nc")
+
+
+def test_falls_back_to_legacy_request_form(tmp_path):
+    """If EWDS rejects the current key names, the old CDS form is tried once
+    and then used for the remaining years; a zipped reply is unpacked."""
+    import zipfile
+
+    from rivmapper_v2.glofas import Glofas
+
+    calls = []
+
+    def ewds(request, target):
+        calls.append(request)
+        if "year" in request:
+            raise RuntimeError(
+                "400 Client Error: invalid request. Request has not produced a "
+                "valid combination of values, please check your selection."
+            )
+        year = request_year(request)
+        nc = tmp_path / "inner.nc"
+        valid = pd.date_range(f"{year}-01-02", periods=365, freq="D")
+        write_discharge(nc, valid, tuple(request["area"]))
+        with zipfile.ZipFile(target, "w") as zf:
+            zf.write(nc, "data_version-5.nc")
+
+    src = Glofas(
+        version="5.0",
+        product_type="consolidated",
+        glofas_dir=None,
+        cache_file=lambda y: tmp_path / "cache" / f"g_{y}.nc",
+        retrieve=ewds,
+    )
+    lon, lat = 141.275, -5.825
+    for y in (2003, 2004):
+        src._year_files(y, np.array([lon]), np.array([lat]))
+    assert ["year" in c for c in calls] == [True, False, False]
+    assert src.describe()["request_form"] == "legacy"
