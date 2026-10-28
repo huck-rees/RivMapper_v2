@@ -272,7 +272,11 @@ def dswe_counts(
                 ee.Algorithms.If(ee.String(img.get("sensor")).equals("LE07"), 1, 0)
             )
             layers.append(d.gte(0).multiply(ee.Image.constant(is_le07)))
-        return ee.Image.cat(*layers).rename(bands).unmask(0)
+        # Explicit cast: a layer multiplied by a constant 0 (non-Landsat-7
+        # scenes) gets a narrower pixel type than the same layer for a
+        # Landsat 7 scene, and summing mixed types fails EE's
+        # homogeneous-collection check.
+        return ee.Image.cat(*layers).rename(bands).unmask(0).toUint8()
 
     # When no scene touches ``geometry`` (possible for a single tile), summing
     # an empty collection gives an image with no bands; use all-zero counts
