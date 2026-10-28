@@ -475,3 +475,22 @@ def test_oktedi_windows_tile_without_gaps_or_overlap(oktedi_root):
         claims[rr : rr + g.height, cc : cc + g.width] += inside
     assert claims.max() == 1
     assert np.array_equal(claims > 0, layout.owner(full) > 0)
+
+
+def test_channel_crossing_a_wide_wet_patch_is_not_cut():
+    """A wide wet patch lying on the channel (flooded bend, bar flats) is
+    trimmed, but the channel through it is kept, so the river stays
+    connected end to end and nothing upstream is pruned as a dead end."""
+    from rivmapper_v2.process.channel import extract
+
+    s = ProcessSettings(min_component_w2=1)
+    p = _straight()
+    p[12:52, 150:190] = 1.0  # wet patch 10 W wide, straddling the channel
+    inp = _channel_inputs(p)
+    inp.centerline[:] = False
+    inp.centerline[5, :] = True  # SWORD line far off (migrated channel)
+    inp.prev_mask = _straight() > 0.5  # last year's channel seeds instead
+    res = extract(inp, s, 0.5)
+    assert res.channel[30, 20] and res.channel[30, 170] and res.channel[30, 195]
+    assert not res.channel[48, 170]  # far side of the patch removed
+    assert res.stats["through"]

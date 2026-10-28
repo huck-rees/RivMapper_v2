@@ -257,6 +257,16 @@ def _start_piece(mask: np.ndarray, seeds: np.ndarray, term: np.ndarray) -> np.nd
     return lab == int(np.argmax(score))
 
 
+def _touches_two_terminals(mask: np.ndarray, term: np.ndarray) -> bool:
+    """True if one connected piece of ``mask`` touches two terminal zones."""
+    lab, n = ndi.label(mask, structure=EIGHT)
+    if n == 0 or not (term > 0).any():
+        return False
+    pairs = np.unique(np.stack([lab[term > 0], term[term > 0]]), axis=1)
+    pairs = pairs[:, pairs[0] > 0]
+    return bool((np.bincount(pairs[0], minlength=n + 1) >= 2).any())
+
+
 def _neighbours(mask: np.ndarray) -> np.ndarray:
     k = np.ones((3, 3), np.uint8)
     k[1, 1] = 0
@@ -388,10 +398,21 @@ def extract(
         blob = grown & (ndi.distance_transform_edt(~thick) <= rp + 1)
         on_line = ndi.binary_dilation(inp.centerline, EIGHT, iterations=2)
         blob_off = blob & ~_keep_touching(blob, on_line)
+        if blob_off.any():
+            # keep a channel-wide corridor along the skeleton through the
+            # blob: a channel crossing a wet patch must not be cut (a lake
+            # beside the channel becomes a spur, pruned as a dead end below)
+            from skimage.morphology import skeletonize
+
+            skel = skeletonize(grown)
+            blob_off &= ndi.distance_transform_edt(~skel) > max(0.5 * W, 1.0)
+        candidate = _keep_touching(grown & ~blob_off, net & ~blob_off)
+        if through and not _touches_two_terminals(candidate, term):
+            blob_off[:] = False  # removal would disconnect the river: undo
+            candidate = grown
         removed_wide = int(blob_off.sum())
-        before = grown
-        grown = _keep_touching(grown & ~blob_off, net & ~blob_off)
-        wide_mask = before & ~grown
+        wide_mask = grown & ~candidate
+        grown = candidate
 
     # 10. dead ends (cutoffs still joined at one end, tributary mouths)
     pruned = 0
