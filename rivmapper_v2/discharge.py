@@ -521,6 +521,10 @@ def discharge(
     describe = getattr(source, "describe", None)
     if callable(describe):
         summary["source_details"] = describe()
+    # if masks were already processed, add the stage columns to their QA table
+    from .process.step import add_stage_to_qa_table
+
+    summary["qa_table_updated"] = add_stage_to_qa_table(p)
     write_run_record(
         p.run_record(STEP),
         step=STEP,

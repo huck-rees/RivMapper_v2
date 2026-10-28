@@ -535,6 +535,16 @@ def _write_mask(path, grid, bands: dict, tags: dict) -> None:
 STAGE_COLUMNS = ("q_scene_median", "q_scene_pctile", "stage_flag")
 
 
+def add_stage_to_qa_table(paths) -> bool:
+    """Refresh the stage columns of an existing QA table (called by the
+    ``discharge`` step, so the two steps can run in either order)."""
+    if not paths.process_qa_table.exists():
+        return False
+    table = pd.read_csv(paths.process_qa_table)
+    _add_stage(table, paths).to_csv(paths.process_qa_table, index=False)
+    return True
+
+
 def _add_stage(table: pd.DataFrame, paths) -> pd.DataFrame:
     """Join the discharge step's stage statistics, if it has run.
 
@@ -542,7 +552,11 @@ def _add_stage(table: pd.DataFrame, paths) -> pd.DataFrame:
     and appends ``low_stage`` / ``high_stage`` to ``flags``. Without them
     the columns are empty and ``flags`` gains ``no_discharge``.
     """
-    table["flags"] = table["flags"].fillna("").astype(str)
+    stage_flags = {"low_stage", "high_stage", "no_discharge"}
+    table["flags"] = [
+        ";".join(x for x in str(f).split(";") if x and x not in stage_flags)
+        for f in table["flags"].fillna("")
+    ]
     if paths.stage_table.exists():
         stage = pd.read_csv(paths.stage_table)[["ds_order", "year", *STAGE_COLUMNS]]
         stage["stage_flag"] = stage["stage_flag"].fillna("")

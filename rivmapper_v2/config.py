@@ -367,6 +367,15 @@ class DischargeSettings(_Section):
             "months only)."
         ),
     )
+    glofas_workers: int = Field(
+        6,
+        ge=1,
+        le=16,
+        description=(
+            "GloFAS years requested from EWDS at once (they queue and run in "
+            "parallel on the server; EWDS caps how many of yours run together)."
+        ),
+    )
     glofas_dir: Path | None = Field(
         None,
         description=(

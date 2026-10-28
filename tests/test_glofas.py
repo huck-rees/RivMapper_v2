@@ -61,6 +61,13 @@ def write_discharge(
     path, valid: pd.DatetimeIndex, box, names=("valid_time", "latitude", "longitude")
 ) -> None:
     """A GloFAS-like NetCDF: value at valid time T = mean of day T - 1."""
+    from rivmapper_v2.glofas import NC_LOCK
+
+    with NC_LOCK:  # fakes write NetCDF from download threads
+        _write_discharge(path, valid, box, names)
+
+
+def _write_discharge(path, valid, box, names) -> None:
     t, la, lo = names
     lats, lons = grid(*box)
     q = q_true(valid - pd.Timedelta(days=1))
@@ -226,7 +233,7 @@ def test_daily_downloads_once_per_year_then_uses_cache(lines, tmp_path, valid_en
     src = make(ewds)
     q = src.daily(ids, "2002-01-01", "2004-12-31")
     assert [request_year(c) for c in ewds.calls] == [2002, 2003, 2004]
-    assert sorted(p.name for p in (tmp_path / "cache").iterdir()) == [
+    assert sorted(p.name for p in (tmp_path / "cache").glob("*.nc")) == [
         "Synth_2002.nc",
         "Synth_2003.nc",
         "Synth_2004.nc",
@@ -398,3 +405,38 @@ def test_falls_back_to_legacy_request_form(tmp_path):
         src._year_files(y, np.array([lon]), np.array([lat]))
     assert ["year" in c for c in calls] == [True, False, False]
     assert src.describe()["request_form"] == "legacy"
+
+
+def test_years_are_requested_in_parallel_after_the_first(tmp_path):
+    import threading
+    import time
+
+    from rivmapper_v2.glofas import Glofas
+
+    active, peak, lock = [0], [0], threading.Lock()
+
+    def ewds(request, target):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.2)
+        year = request_year(request)
+        valid = pd.date_range(f"{year}-01-02", periods=365, freq="D")
+        write_discharge(target, valid, tuple(request["area"]))
+        with lock:
+            active[0] -= 1
+
+    src = Glofas(
+        version="5.0",
+        cache_file=lambda y: tmp_path / "cache" / f"g_{y}.nc",
+        retrieve=ewds,
+        workers=4,
+    )
+    q = src.daily(
+        [cell_id(*[int(v[0]) for v in cell_index([141.275], [-5.825])])],
+        "2001-01-01",
+        "2006-12-31",
+    )
+    assert q.notna().mean().iloc[0] > 0.99
+    assert peak[0] >= 3  # after the first year, several at once
+    assert (tmp_path / "cache" / "ewds_request_form.txt").read_text() == "current"

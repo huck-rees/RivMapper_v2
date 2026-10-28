@@ -71,6 +71,10 @@ A rerun, or a run resumed after an interruption, therefore downloads only the ye
 
 **One request per river per year.** Each request asks for one variable, all days of one year (`year`, `month` 01–12, `day` 01–31, variable `average_river_discharge_in_the_last_24_hours` with `timespan: time_mean`; if EWDS rejects that form, the older CDS form (`hyear`/`hmonth`/`hday`, `river_discharge_in_the_last_24_hours`) is tried once and the accepted form is recorded in the run record), NetCDF, clipped with `area` [N, W, S, E] to the joined cells plus a 0.1° margin, rounded outward to the nearest 0.5°. Rounding keeps the area the same when a rerun changes the join slightly, so the cache stays valid. Yearly requests are the usual pattern for this dataset (EWDS limits the size of single requests) and match the cache's resume unit. A cached file that no longer covers the joined cells is downloaded again.
 
+**Parallel requests.** EWDS takes from minutes to over half an hour per request (queue, extraction, GRIB-to-NetCDF conversion); the download itself takes seconds. Missing years are therefore requested `glofas_workers` (6) at a time: years run one by one only until one request has succeeded, which shows the request form EWDS accepts (remembered in `glofas/ewds_request_form.txt`), then the rest go in parallel. EWDS limits how many of one user's requests run together, so the speed-up is capped by that, not by `glofas_workers`. On the Ok Tedi, sequential requests ran at 17–32 minutes a year. NetCDF reading stays single-threaded (the HDF5 library is not thread-safe).
+
+**QA table.** If `process_masks` has already run, this step adds its stage columns to that QA table itself, so the two steps can run in either order.
+
 **Why clip, and why cache per river.** A global year of daily 0.05° discharge is 7200 × 3000 cells × 365 days, about 31 GB uncompressed (about 1.5 TB for 1979–2025). A river's clip of a few degrees is around a megabyte a year. The clipped files are specific to one river's area, so they live with the river's other outputs, under `{river}/discharge/glofas/`, not in the shared `data/` folder. A shared folder of clips keyed by bounding box would grow with every river and be hard to tell apart. The shared, reusable copy of GloFAS is a lab archive, which `glofas_dir` points to. The upstream-area map, which every river needs, is in `data/GloFAS/`.
 
 The values of the joined cells are written to `{river}_discharge_daily.csv`.
@@ -115,6 +119,7 @@ The step is **optional**: if it fails (no network, no EWDS key, no scene manifes
 | `glofas_version` | `4.0` | GloFAS reanalysis version, `4.0` or `5.0` |
 | `glofas_product_type` | `consolidated` | `consolidated` (ERA5) or `intermediate` (ERA5T, recent months) |
 | `glofas_dir` | — | Folder of GloFAS NetCDF files already on disk, read before downloading |
+| `glofas_workers` | 6 | Years requested from EWDS at once |
 | `search_km` | 5 | Search radius at the reach's downstream end |
 | `area_tolerance` | 2 | Model and reach upstream areas must agree within this factor |
 | `low_stage_pctile` | 20 | Scene-date discharge below this percentile → `low_stage` |

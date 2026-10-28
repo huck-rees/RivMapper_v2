@@ -267,8 +267,18 @@ class GlofasFile:
         return int(t.normalize().nunique())
 
 
+# HDF5/netCDF4 is not thread-safe: downloads run in parallel threads, but
+# every NetCDF open happens under this lock.
+NC_LOCK = __import__("threading").RLock()
+
+
 def inspect_file(path: Path) -> GlofasFile | None:
     """Describe a GloFAS discharge file; None if it is not one."""
+    with NC_LOCK:
+        return _inspect_file(path)
+
+
+def _inspect_file(path: Path) -> GlofasFile | None:
     xr = _xr()
     try:
         with xr.open_dataset(path) as ds:
@@ -290,7 +300,7 @@ def inspect_file(path: Path) -> GlofasFile | None:
     )
 
 
-def extract_points(
+def _extract_points(
     path: Path,
     ids: list[str],
     lons: np.ndarray,
@@ -324,6 +334,12 @@ def extract_points(
         values = np.asarray(pts.values, dtype=float)
         times = pd.DatetimeIndex(np.atleast_1d(pts["time"].values))
     return pd.DataFrame(values, index=times, columns=list(ids))
+
+
+def extract_points(*args, **kwargs):
+    """Daily series at points from one file (see ``_extract_points``)."""
+    with NC_LOCK:
+        return _extract_points(*args, **kwargs)
 
 
 def to_day_of_mean(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
@@ -505,9 +521,17 @@ class Glofas:
         glofas_dir: Path | None = None,
         uparea_path: Path | None = None,
         retrieve: Retrieve | None = None,
+        workers: int = 1,
     ):
+        self.workers = max(1, int(workers))
         self.cache_file = cache_file
         self._schema: str | None = None  # request form EWDS accepted
+        try:  # remembered from an earlier run (lets parallel requests start at once)
+            f = self._schema_file()
+            if f is not None and f.exists() and f.read_text().strip() in SCHEMAS:
+                self._schema = f.read_text().strip()
+        except Exception:  # noqa: BLE001 — a hint only
+            pass
         self.version = version
         self.product_type = product_type
         self.glofas_dir = Path(glofas_dir) if glofas_dir else None
@@ -525,6 +549,7 @@ class Glofas:
             version=d.glofas_version,
             product_type=d.glofas_product_type,
             glofas_dir=d.glofas_dir,
+            workers=d.glofas_workers,
             **kw,
         )
 
@@ -570,10 +595,13 @@ class Glofas:
         rc = np.array([parse_cell_id(i) for i in ids])
         lons, lats = cell_center(rc[:, 0], rc[:, 1])
         t0, t1 = pd.Timestamp(start), pd.Timestamp(end)
-        frames = []
-        for year in range(t0.year, t1.year + 1):
-            for path in self._year_files(year, lons, lats):
-                frames.append(extract_points(path, ids, lons, lats, year))
+        years = list(range(t0.year, t1.year + 1))
+        files = self._all_year_files(years, lons, lats)
+        frames = [
+            extract_points(path, ids, lons, lats, year)
+            for year in years
+            for path in files[year]
+        ]
         days = pd.date_range(t0, t1, freq="D", name="date")
         if not frames:
             return pd.DataFrame(index=days, columns=ids, dtype=float)
@@ -582,6 +610,35 @@ class Glofas:
         q = q[~q.index.duplicated(keep="first")].sort_index()
         out = q.reindex(days)
         out.index.name = "date"
+        return out
+
+    def _schema_file(self) -> Path | None:
+        try:
+            return Path(self.cache_file(2000)).parent / "ewds_request_form.txt"
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _all_year_files(self, years, lons, lats) -> dict[int, list[Path]]:
+        """Files for every year; missing years are requested ``workers`` at a
+        time. Years run one by one until a download has shown which request
+        form EWDS accepts, then the rest go in parallel."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        out: dict[int, list[Path]] = {}
+        todo = list(years)
+        while todo and (self._schema is None or self.workers == 1):
+            y = todo.pop(0)
+            out[y] = self._year_files(y, lons, lats)
+            if self.workers > 1 and self._schema is not None:
+                break
+        if todo:
+            with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                for y, files in zip(
+                    todo,
+                    pool.map(lambda y: self._year_files(y, lons, lats), todo),
+                    strict=True,
+                ):
+                    out[y] = files
         return out
 
     def _year_files(self, year: int, lons: np.ndarray, lats: np.ndarray) -> list[Path]:
@@ -640,6 +697,12 @@ class Glofas:
                     continue
                 raise
             self._schema = schema  # remember what works for later years
+            try:
+                f = self._schema_file()
+                if f is not None:
+                    f.write_text(schema)
+            except OSError:
+                pass
             break
         _unzip_if_needed(part)
         part.replace(path)  # only complete downloads get the final name
