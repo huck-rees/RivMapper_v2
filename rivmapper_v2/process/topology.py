@@ -300,10 +300,13 @@ def thread_test(
       core share 0.4 × the usual), so a loop that is silting up does not
       flicker in and out; maximum widths are not relaxed, so floodplain
       water let in one wet year does not stick.
-    * **Short links** (< 3 W: junctions, the ends of a loop) are not judged
-      on their own: a connected group of them passes when it joins two
-      passing links, at least one of them a second thread (links < 1 W may
-      also join the main path to itself), and is short itself.
+    * **Short links** are not judged on their own: links < 1 W
+      (junctions), and links < 3 W on last year's channel (the narrowing
+      ends of an existing loop). A connected group of them passes when it
+      joins two passing links, at least one of them a second thread (a
+      group of links < 1 W may also join the main path to itself), and is
+      short itself. Short links off last year's channel are judged like any
+      other, so scattered floodplain water cannot be stitched into loops.
     """
     if main:
         m = links.loc[sorted(main)]
@@ -325,12 +328,17 @@ def thread_test(
         )
 
     thread = passes(1, 1, 1, 1)
+    was = links.prev_frac.fillna(0) >= 0.5
     if rule.persistence:
-        was = links.prev_frac.fillna(0) >= 0.5
         thread |= was & passes(0.5, 1.0, 0.4, 1.5)
 
+    # links < 1 W always; links < 3 W only where last year's channel ran
+    # (otherwise the rule completes loops out of scattered floodplain water)
     p90_cap = rule.width_p90_max_w * ref
-    short = (links.length_w < SHORT_LINK_W) & ~thread & (links.width_p90_w <= p90_cap)
+    eligible = links.length_w < TINY_LINK_W
+    if rule.persistence:
+        eligible |= (links.length_w < SHORT_LINK_W) & was
+    short = eligible & ~thread & (links.width_p90_w <= p90_cap)
     if short.any():
         thr_ids = set(links.index[thread.to_numpy()].tolist()) - main
         main_nodes: dict[int, int] = {}
@@ -353,7 +361,8 @@ def thread_test(
             n_main = sum(main_nodes.get(n, 0) for n in comp)
             all_tiny = bool((links.length_w[ks] < TINY_LINK_W).all())
             joins = n_thr + n_main >= 2 and (n_thr >= 1 or all_tiny)
-            if joins and links.length_w[ks].sum() <= 2 * SHORT_LINK_W:
+            limit = 2 * (TINY_LINK_W if all_tiny else SHORT_LINK_W)
+            if joins and links.length_w[ks].sum() <= limit:
                 thread[ks] = True
     return thread
 
