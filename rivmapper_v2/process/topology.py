@@ -49,7 +49,8 @@ from scipy import ndimage as ndi
 EIGHT = np.ones((3, 3), bool)
 TINY_LINK_W = 1.0  # links this short may join the main path to itself
 SHORT_LINK_W = 3.0
-MAX_REF_W = 2.0  # main-channel width reference is capped at this (W)  # links shorter than this (W) are not judged on their own
+MAX_REF_W = 2.0
+LATTICE_W = 10.0  # side-channel networks: at most one internal loop per this length (W)  # main-channel width reference is capped at this (W)  # links shorter than this (W) are not judged on their own
 MINOR_LOOP_W = 1.5  # loops shorter than this (W) between kept links are kept
 KEPT_DECISIONS = {"main", "thread", "terminal_zone", "spur", "minor_loop"}
 
@@ -378,8 +379,8 @@ def select_links(
 
     Decisions: ``main``, ``thread``, ``terminal_zone`` (kept); ``spur`` (short dead end off the
     kept network, ≤ ``spur_max_w``: bank irregularities, bar heads; kept);
-    ``floodplain_loop``, ``thread_not_in_loop``, ``dead_end_or_isolated``
-    (dropped).
+    ``floodplain_loop``, ``floodplain_lattice``, ``thread_not_in_loop``,
+    ``dead_end_or_isolated`` (dropped).
     """
     rule = rule or ThreadRule()
     links = lg.links.copy()
@@ -423,6 +424,21 @@ def select_links(
                 ok |= {
                     abs(k) for a, b, k in g.subgraph(comp).edges(keys=True) if k > 0
                 }
+        # Lattice test: a side-channel network is (nearly) a simple path
+        # between points on the main channel; floodplain water is a tangle
+        # of small loops. Each connected group of second-thread links may
+        # hold at most one internal loop per LATTICE_W widths of its length.
+        tg = nx.MultiGraph()
+        for a, b, k in lg.graph.edges(keys=True):
+            if k > 0 and k in ok and dec[k] == "thread":
+                tg.add_edge(a, b, key=k)
+        for comp in nx.connected_components(tg):
+            sub = tg.subgraph(comp)
+            ks = [k for _, _, k in sub.edges(keys=True)]
+            cycles = sub.number_of_edges() - sub.number_of_nodes() + 1
+            if cycles > links.length_w[ks].sum() / LATTICE_W:
+                ok -= set(ks)
+                dec[ks] = "floodplain_lattice"
         orphan = dec.eq("thread") & ~links.index.isin(list(ok))
         dec[orphan] = "thread_not_in_loop"
         # short spurs hanging directly off the kept network stay

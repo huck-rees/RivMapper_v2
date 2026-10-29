@@ -373,7 +373,9 @@ def _select_network(grown, inp, s, core, term, W):
         "links_main": int(counts.get("main", 0)),
         "links_thread": int(counts.get("thread", 0)),
         "links_floodplain": int(
-            counts.get("floodplain_loop", 0) + counts.get("thread_not_in_loop", 0)
+            counts.get("floodplain_loop", 0)
+            + counts.get("floodplain_lattice", 0)
+            + counts.get("thread_not_in_loop", 0)
         ),
         "links_dead_end": int(counts.get("dead_end_or_isolated", 0)),
     }
