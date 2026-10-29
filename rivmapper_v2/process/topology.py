@@ -50,6 +50,7 @@ EIGHT = np.ones((3, 3), bool)
 TINY_LINK_W = 1.0  # links this short may join the main path to itself
 SHORT_LINK_W = 3.0
 MAX_REF_W = 2.0
+CLUTTER_LINK_W = 0.5  # lattice test: links shorter than this (W) are junction clutter
 LATTICE_W = 10.0  # side-channel networks: at most one internal loop per this length (W)  # main-channel width reference is capped at this (W)  # links shorter than this (W) are not judged on their own
 MINOR_LOOP_W = 1.5  # loops shorter than this (W) between kept links are kept
 KEPT_DECISIONS = {"main", "thread", "terminal_zone", "spur", "minor_loop"}
@@ -287,9 +288,10 @@ class ThreadRule:
 def _coarse_cycles(g: nx.MultiGraph, length_w: pd.Series) -> int:
     """Independent loops of ``g`` that are bigger than junction noise.
 
-    Links shorter than TINY_LINK_W are contracted into their nodes, and
-    loops of total length below 2 × MINOR_LOOP_W left on one node after
-    that (holes, bars, junction clutter) are not counted.
+    Links shorter than CLUTTER_LINK_W are contracted into their nodes, and
+    loops shorter than MINOR_LOOP_W left on one node after that (holes,
+    junction clutter) are not counted. Floodplain lattice cells (links of
+    ~0.4–1.2 W, 2–4 W around) still count.
     """
     parent: dict[int, int] = {n: n for n in g.nodes}
 
@@ -300,15 +302,15 @@ def _coarse_cycles(g: nx.MultiGraph, length_w: pd.Series) -> int:
         return n
 
     for a, b, k in g.edges(keys=True):
-        if length_w[k] < TINY_LINK_W:
+        if length_w[k] < CLUTTER_LINK_W:
             parent[find(a)] = find(b)
     h = nx.MultiGraph()
     h.add_nodes_from({find(n) for n in g.nodes})
     for a, b, k in g.edges(keys=True):
-        if length_w[k] < TINY_LINK_W:
+        if length_w[k] < CLUTTER_LINK_W:
             continue
         ra, rb = find(a), find(b)
-        if ra == rb and length_w[k] < 2 * MINOR_LOOP_W:
+        if ra == rb and length_w[k] < MINOR_LOOP_W:
             continue
         h.add_edge(ra, rb, key=k)
     return h.number_of_edges() - h.number_of_nodes() + nx.number_connected_components(h)
