@@ -77,7 +77,11 @@ class ChannelInputs:
         terminals: Labelled zones where the river enters/leaves the window
             (``RiverLayout.terminals``); None = derive from the polygon edge.
         dead_end_px: Dead-end branches longer than this are removed
-            (default ``dead_end_widths`` × W).
+            (default ``dead_end_widths`` × W, or ``dead_end_widths_braided``
+            in braided reaches).
+        braided: The centre reach is braided (most SWORD nodes in it have
+            n_chan_mod > 1): lower width floor for second threads, longer
+            dead-end limit.
     """
 
     p_channel: np.ndarray
@@ -91,6 +95,7 @@ class ChannelInputs:
     width_px: float
     terminals: np.ndarray | None = None
     dead_end_px: float | None = None
+    braided: bool = False
 
 
 @dataclass
@@ -351,9 +356,15 @@ def _select_network(grown, inp, s, core, term, W):
         width_p90_max_w=s.thread_max_p90_widths,
         min_core_frac=s.thread_min_core,
         max_width_cv=s.thread_max_width_cv,
+        persistence=s.thread_persistence,
     )
-    max_len = inp.dead_end_px / W if inp.dead_end_px is not None else s.dead_end_widths
-    kept, links = topology.select_links(lg, rule, spur_max_w=max_len)
+    if inp.dead_end_px is not None:
+        max_len = inp.dead_end_px / W
+    else:
+        max_len = s.dead_end_widths_braided if inp.braided else s.dead_end_widths
+    kept, links = topology.select_links(
+        lg, rule, braided=inp.braided, spur_max_w=max_len
+    )
     stats_links = links
     empty = np.zeros_like(grown)
     counts = links.decision.value_counts()
@@ -510,7 +521,9 @@ def extract(
             else terminals(inside, inp.centerline, W)
         )
         max_len = (
-            inp.dead_end_px if inp.dead_end_px is not None else s.dead_end_widths * W
+            inp.dead_end_px
+            if inp.dead_end_px is not None
+            else (s.dead_end_widths_braided if inp.braided else s.dead_end_widths) * W
         )
         before = grown
         grown, pruned = prune_dead_ends(grown, term, max_len, W)
@@ -537,6 +550,7 @@ def extract(
         "small_px": int(small_mask.sum()),
         "filled_px": int(filled.sum()),
         "floodplain_px": int((flood_mask & ~final).sum()),
+        "braided": bool(inp.braided),
         **link_stats,
     }
     # 12. record each pixel's fate (later codes overwrite earlier ones)

@@ -47,7 +47,8 @@ import pandas as pd
 from scipy import ndimage as ndi
 
 EIGHT = np.ones((3, 3), bool)
-TINY_LINK_W = 1.0  # links shorter than this (W) are not judged on their own
+TINY_LINK_W = 1.0  # links this short may join the main path to itself
+SHORT_LINK_W = 3.0  # links shorter than this (W) are not judged on their own
 MINOR_LOOP_W = 1.5  # loops shorter than this (W) between kept links are kept
 KEPT_DECISIONS = {"main", "thread", "terminal_zone", "spur", "minor_loop"}
 
@@ -278,6 +279,81 @@ class ThreadRule:
     width_p90_max_w: float = 2.5  # no part much wider (lakes, flooded forest)
     min_core_frac: float = 0.5
     max_width_cv: float = 0.6
+    persistence: bool = True  # last year's channel links pass looser limits
+
+
+def thread_test(
+    lg: LinkGraph,
+    links: pd.DataFrame,
+    main: set[int],
+    rule: ThreadRule,
+    braided: bool = False,
+) -> pd.Series:
+    """Which links look like channel (before the loop test).
+
+    * Widths are judged against the main path's own width in this window
+      (length-weighted median, at least 1 W), so a river running wider
+      than its width model is not penalised.
+    * **Persistence**: a link mostly on last year's channel (≥ 50%) passes
+      looser limits (min width × 0.5, max widths and CV × 1.5, core share
+      0.4 × the usual), so a loop does not flicker in and out on marginal
+      detections; a new loop must pass the normal test.
+    * **Short links** (< 3 W: junctions, the ends of a loop) are not judged
+      on their own: a connected group of them passes when it joins two
+      passing links, at least one of them a second thread (links < 1 W may
+      also join the main path to itself), and is short itself.
+    """
+    if main:
+        m = links.loc[sorted(main)]
+        order = np.argsort(m.width_w.to_numpy())
+        cum = np.cumsum(m.length_w.to_numpy()[order])
+        ref = float(m.width_w.to_numpy()[order][np.searchsorted(cum, cum[-1] / 2)])
+        ref = max(ref, 1.0)
+    else:
+        ref = 1.0
+    wmin = rule.width_min_w * (0.5 if braided else 1.0)
+    core = links.core_frac.fillna(1)
+
+    def passes(f_min, f_max, f_core, f_cv):
+        return (
+            links.width_w.between(wmin * f_min, rule.width_max_w * ref * f_max)
+            & (links.width_p90_w <= rule.width_p90_max_w * ref * f_max)
+            & (core >= rule.min_core_frac * f_core)
+            & (links.width_cv <= rule.max_width_cv * f_cv)
+        )
+
+    thread = passes(1, 1, 1, 1)
+    if rule.persistence:
+        was = links.prev_frac.fillna(0) >= 0.5
+        thread |= was & passes(0.5, 1.5, 0.4, 1.5)
+
+    p90_cap = rule.width_p90_max_w * ref * (1.5 if rule.persistence else 1.0)
+    short = (links.length_w < SHORT_LINK_W) & ~thread & (links.width_p90_w <= p90_cap)
+    if short.any():
+        thr_ids = set(links.index[thread.to_numpy()].tolist()) - main
+        main_nodes: dict[int, int] = {}
+        thr_nodes: dict[int, int] = {}
+        sg = nx.MultiGraph()
+        for a, b, k in lg.graph.edges(keys=True):
+            if k <= 0:
+                continue
+            if k in main:
+                for n in {a, b}:
+                    main_nodes[n] = main_nodes.get(n, 0) + 1
+            elif k in thr_ids:
+                for n in {a, b}:
+                    thr_nodes[n] = thr_nodes.get(n, 0) + 1
+            elif short.get(k, False):
+                sg.add_edge(a, b, key=k)
+        for comp in nx.connected_components(sg):
+            ks = [k for _, _, k in sg.subgraph(comp).edges(keys=True)]
+            n_thr = sum(thr_nodes.get(n, 0) for n in comp)
+            n_main = sum(main_nodes.get(n, 0) for n in comp)
+            all_tiny = bool((links.length_w[ks] < TINY_LINK_W).all())
+            joins = n_thr + n_main >= 2 and (n_thr >= 1 or all_tiny)
+            if joins and links.length_w[ks].sum() <= 2 * SHORT_LINK_W:
+                thread[ks] = True
+    return thread
 
 
 def select_links(
@@ -297,34 +373,7 @@ def select_links(
     links = lg.links.copy()
     main = main_path(lg)
     through = through_links(lg, main)
-    wmin = rule.width_min_w * (0.5 if braided else 1.0)
-    thread = (
-        links.width_w.between(wmin, rule.width_max_w)
-        & (links.width_p90_w <= rule.width_p90_max_w)
-        & (links.core_frac.fillna(1) >= rule.min_core_frac)
-        & (links.width_cv <= rule.max_width_cv)
-    )
-    # Links shorter than 1 W (connectors at junctions) are too short to judge
-    # on their own. A connected group of them passes when it joins two or
-    # more links that pass (or are on the main path) and is short itself.
-    tiny = (links.length_w < TINY_LINK_W) & (links.width_p90_w <= rule.width_p90_max_w)
-    if tiny.any():
-        good = set(links.index[(thread & ~tiny).to_numpy()].tolist()) | main
-        good_nodes: dict[int, int] = {}
-        tg = nx.MultiGraph()
-        for a, b, k in lg.graph.edges(keys=True):
-            if k <= 0:
-                continue
-            if k in good:
-                for n in {a, b}:
-                    good_nodes[n] = good_nodes.get(n, 0) + 1
-            elif tiny.get(k, False):
-                tg.add_edge(a, b, key=k)
-        for comp in nx.connected_components(tg):
-            ks = [k for _, _, k in tg.subgraph(comp).edges(keys=True)]
-            touching = sum(good_nodes.get(n, 0) for n in comp)
-            if touching >= 2 and links.length_w[ks].sum() <= 2 * TINY_LINK_W:
-                thread[ks] = True
+    thread = thread_test(lg, links, main, rule, braided)
     dec = pd.Series("dead_end_or_isolated", index=links.index)
     th = links.index.isin(list(through))
     dec[th] = "floodplain_loop"

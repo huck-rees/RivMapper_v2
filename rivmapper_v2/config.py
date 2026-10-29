@@ -331,16 +331,33 @@ class ProcessSettings(_Section):
         0.3, ge=0, description="Second threads at least this × W wide (median)."
     )
     thread_max_widths: float = Field(
-        1.6, gt=0, description="... and at most this × W wide (median)."
+        1.6,
+        gt=0,
+        description="... and at most this × the main channel's width (median).",
     )
     thread_max_p90_widths: float = Field(
-        2.5, gt=0, description="... with no part (90th percentile) wider than this × W."
+        2.5,
+        gt=0,
+        description="... with no part (90th percentile) wider than this × the "
+        "main channel's width.",
     )
     thread_min_core: float = Field(
         0.5, ge=0, le=1, description="... on the low-flow core for at least this share."
     )
     thread_max_width_cv: float = Field(
         0.6, gt=0, description="... and width varying by at most this (CV)."
+    )
+    thread_persistence: bool = Field(
+        True,
+        description="A link on last year's channel passes looser thread limits "
+        "(reduces year-to-year flicker of side channels).",
+    )
+    braided_min_chan: float = Field(
+        0.5,
+        ge=0,
+        le=1,
+        description="A reach is braided when at least this share of its SWORD "
+        "nodes has n_chan_mod > 1.",
     )
     link_margin_widths: float = Field(
         0.5,

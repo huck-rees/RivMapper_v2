@@ -331,7 +331,31 @@ def _window_year(paths, layout, window, years, t):
     return n_obs, n_wet_3, n_prev, p_ch, p_mg
 
 
-def _process_window(river, layout, paths, window, years, status, env_thr, lines):
+def braided_reaches(paths, layout, min_share: float) -> dict[int, bool]:
+    """Per reach: braided if at least ``min_share`` of the SWORD nodes inside
+    its polygon have ``n_chan_mod`` > 1. Missing node file: none braided."""
+    import geopandas as gpd
+
+    out = {int(o): False for o in layout.ds_orders}
+    f = paths.sword_nodes
+    if not f.exists():
+        return out
+    nodes = gpd.read_file(f, columns=["n_chan_mod"]).to_crs(layout.crs)
+    if "n_chan_mod" not in nodes.columns or nodes.empty:
+        return out
+    polys = layout.polygons.reset_index()[["ds_order", "geometry"]]
+    j = gpd.sjoin(nodes, polys, predicate="within", how="inner")
+    if j.empty:
+        return out
+    share = (j["n_chan_mod"] > 1).groupby(j["ds_order"]).mean()
+    for o, v in share.items():
+        out[int(o)] = bool(v >= min_share)
+    return out
+
+
+def _process_window(
+    river, layout, paths, window, years, status, env_thr, lines, braided=False
+):
     """Extract every year of one window.
 
     Returns {year: None (no data) or dict(channel, core, stats, score,
@@ -371,6 +395,7 @@ def _process_window(river, layout, paths, window, years, status, env_thr, lines)
             prev_mask=prev,
             width_px=W,
             terminals=term,
+            braided=braided,
         )
 
     def links_in_centre(res):
@@ -662,6 +687,7 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
     )
     rows = []
     thumbs_all = {}
+    braided = braided_reaches(p, layout, s.braided_min_chan)
     for window in layout.windows():
         o = window.center
         rows_file = _ckpt(p, f"r{o:03d}_rows", key).with_suffix(".csv")
@@ -681,7 +707,7 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
             log.info("  reach %d: already done", o)
             continue
         centre, results = _process_window(
-            river, layout, p, window, years, status, env_thr, lines
+            river, layout, p, window, years, status, env_thr, lines, braided[o]
         )
         g = layout.grids[o]
         inside = centre
