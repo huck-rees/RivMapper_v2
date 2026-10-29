@@ -296,10 +296,11 @@ def thread_test(
       (length-weighted median, between 1 and 2 W), so a river running
       wider than its width model is not penalised.
     * **Persistence**: a link mostly on last year's channel (≥ 50%) passes
-      looser limits on the narrowing side only (min width × 0.5, CV × 1.5,
-      core share 0.4 × the usual), so a loop that is silting up does not
-      flicker in and out; maximum widths are not relaxed, so floodplain
-      water let in one wet year does not stick.
+      looser limits on the silting-up side only (min width × 0.5, core
+      share 0.4 × the usual), so a narrowing, shallowing loop does not
+      flicker in and out; maximum widths and width variation are not
+      relaxed, so ragged floodplain water let in one wet year does not
+      stick.
     * **Short links** are not judged on their own: links < 1 W
       (junctions), and links < 3 W on last year's channel (the narrowing
       ends of an existing loop). A connected group of them passes when it
@@ -330,7 +331,7 @@ def thread_test(
     thread = passes(1, 1, 1, 1)
     was = links.prev_frac.fillna(0) >= 0.5
     if rule.persistence:
-        thread |= was & passes(0.5, 1.0, 0.4, 1.5)
+        thread |= was & passes(0.5, 1.0, 0.4, 1.0)
 
     # links < 1 W always; links < 3 W only where last year's channel ran
     # (otherwise the rule completes loops out of scattered floodplain water)
