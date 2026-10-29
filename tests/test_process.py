@@ -541,23 +541,26 @@ def test_network_selection_can_be_switched_off():
 
 
 def test_side_channel_on_last_years_channel_is_kept_with_looser_limits():
-    """A loop a bit too wide for a new thread stays channel if it was channel
-    last year (persistence), and is dropped without that history."""
+    """A loop narrowing below the new-thread minimum (a side channel silting
+    up) stays channel if it was channel last year (persistence), and is
+    dropped without that history."""
     from rivmapper_v2.process.channel import extract
 
-    s = ProcessSettings(min_component_w2=1)
-    p = _straight(shape=(80, 200))
+    s = ProcessSettings(min_component_w2=0.1)
+    p = _straight(shape=(80, 200), half=4)  # main channel 8 px = 1 W
     r = 40
-    p[r - 22 : r - 15, 60:140] = 1.0  # loop 7 px = 1.75 W wide
-    p[r - 22 : r - 2, 58:62] = 1.0
-    p[r - 22 : r - 2, 138:142] = 1.0
-    inp = _channel_inputs(p, W=4.0)
+    p[r - 20 : r - 18, 60:140] = 1.0  # loop 2 px = 0.25 W wide
+    p[r - 20 : r - 4, 59:61] = 1.0
+    p[r - 20 : r - 4, 139:141] = 1.0
+    inp = _channel_inputs(p, W=8.0)
     inp.centerline[:] = False
     inp.centerline[r, :] = True
     new = extract(inp, s, 0.5)
-    assert not new.channel[r - 18, 100]  # new and too wide: dropped
+    assert not new.channel[r - 19, 100]  # new and too narrow: dropped
     inp.prev_mask = p > 0.5  # it was channel last year
     kept = extract(inp, s, 0.5)
-    assert kept.channel[r - 18, 100] and kept.channel[r, 100]
-    off = extract(inp, ProcessSettings(min_component_w2=1, thread_persistence=False), 0.5)
-    assert not off.channel[r - 18, 100]
+    assert kept.channel[r - 19, 100] and kept.channel[r, 100]
+    off = extract(
+        inp, ProcessSettings(min_component_w2=0.1, thread_persistence=False), 0.5
+    )
+    assert not off.channel[r - 19, 100]

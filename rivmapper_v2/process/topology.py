@@ -48,7 +48,8 @@ from scipy import ndimage as ndi
 
 EIGHT = np.ones((3, 3), bool)
 TINY_LINK_W = 1.0  # links this short may join the main path to itself
-SHORT_LINK_W = 3.0  # links shorter than this (W) are not judged on their own
+SHORT_LINK_W = 3.0
+MAX_REF_W = 2.0  # main-channel width reference is capped at this (W)  # links shorter than this (W) are not judged on their own
 MINOR_LOOP_W = 1.5  # loops shorter than this (W) between kept links are kept
 KEPT_DECISIONS = {"main", "thread", "terminal_zone", "spur", "minor_loop"}
 
@@ -292,12 +293,13 @@ def thread_test(
     """Which links look like channel (before the loop test).
 
     * Widths are judged against the main path's own width in this window
-      (length-weighted median, at least 1 W), so a river running wider
-      than its width model is not penalised.
+      (length-weighted median, between 1 and 2 W), so a river running
+      wider than its width model is not penalised.
     * **Persistence**: a link mostly on last year's channel (≥ 50%) passes
-      looser limits (min width × 0.5, max widths and CV × 1.5, core share
-      0.4 × the usual), so a loop does not flicker in and out on marginal
-      detections; a new loop must pass the normal test.
+      looser limits on the narrowing side only (min width × 0.5, CV × 1.5,
+      core share 0.4 × the usual), so a loop that is silting up does not
+      flicker in and out; maximum widths are not relaxed, so floodplain
+      water let in one wet year does not stick.
     * **Short links** (< 3 W: junctions, the ends of a loop) are not judged
       on their own: a connected group of them passes when it joins two
       passing links, at least one of them a second thread (links < 1 W may
@@ -308,7 +310,7 @@ def thread_test(
         order = np.argsort(m.width_w.to_numpy())
         cum = np.cumsum(m.length_w.to_numpy()[order])
         ref = float(m.width_w.to_numpy()[order][np.searchsorted(cum, cum[-1] / 2)])
-        ref = max(ref, 1.0)
+        ref = float(np.clip(ref, 1.0, MAX_REF_W))
     else:
         ref = 1.0
     wmin = rule.width_min_w * (0.5 if braided else 1.0)
@@ -325,9 +327,9 @@ def thread_test(
     thread = passes(1, 1, 1, 1)
     if rule.persistence:
         was = links.prev_frac.fillna(0) >= 0.5
-        thread |= was & passes(0.5, 1.5, 0.4, 1.5)
+        thread |= was & passes(0.5, 1.0, 0.4, 1.5)
 
-    p90_cap = rule.width_p90_max_w * ref * (1.5 if rule.persistence else 1.0)
+    p90_cap = rule.width_p90_max_w * ref
     short = (links.length_w < SHORT_LINK_W) & ~thread & (links.width_p90_w <= p90_cap)
     if short.any():
         thr_ids = set(links.index[thread.to_numpy()].tolist()) - main
