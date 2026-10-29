@@ -284,6 +284,36 @@ class ThreadRule:
     persistence: bool = True  # last year's channel links pass looser limits
 
 
+def _coarse_cycles(g: nx.MultiGraph, length_w: pd.Series) -> int:
+    """Independent loops of ``g`` that are bigger than junction noise.
+
+    Links shorter than TINY_LINK_W are contracted into their nodes, and
+    loops of total length below 2 × MINOR_LOOP_W left on one node after
+    that (holes, bars, junction clutter) are not counted.
+    """
+    parent: dict[int, int] = {n: n for n in g.nodes}
+
+    def find(n):
+        while parent[n] != n:
+            parent[n] = parent[parent[n]]
+            n = parent[n]
+        return n
+
+    for a, b, k in g.edges(keys=True):
+        if length_w[k] < TINY_LINK_W:
+            parent[find(a)] = find(b)
+    h = nx.MultiGraph()
+    h.add_nodes_from({find(n) for n in g.nodes})
+    for a, b, k in g.edges(keys=True):
+        if length_w[k] < TINY_LINK_W:
+            continue
+        ra, rb = find(a), find(b)
+        if ra == rb and length_w[k] < 2 * MINOR_LOOP_W:
+            continue
+        h.add_edge(ra, rb, key=k)
+    return h.number_of_edges() - h.number_of_nodes() + nx.number_connected_components(h)
+
+
 def thread_test(
     lg: LinkGraph,
     links: pd.DataFrame,
@@ -435,7 +465,7 @@ def select_links(
         for comp in nx.connected_components(tg):
             sub = tg.subgraph(comp)
             ks = [k for _, _, k in sub.edges(keys=True)]
-            cycles = sub.number_of_edges() - sub.number_of_nodes() + 1
+            cycles = _coarse_cycles(sub, links.length_w)
             if cycles > links.length_w[ks].sum() / LATTICE_W:
                 ok -= set(ks)
                 dec[ks] = "floodplain_lattice"
