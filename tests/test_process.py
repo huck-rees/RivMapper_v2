@@ -494,3 +494,47 @@ def test_channel_crossing_a_wide_wet_patch_is_not_cut():
     assert res.channel[30, 20] and res.channel[30, 170] and res.channel[30, 195]
     assert not res.channel[48, 170]  # far side of the patch removed
     assert res.stats["through"]
+
+
+def test_channel_drops_floodplain_lattice_but_keeps_side_channel():
+    """Water attached to the channel at two points (a loop) is dropped when
+    it is wide and ragged (floodplain), kept when it looks like a channel."""
+    from rivmapper_v2.process.channel import extract
+
+    s = ProcessSettings(min_component_w2=1)
+    # floodplain: a ragged wet patch 6-12 W wide, joined to the channel by
+    # two narrow arms (so it is on a cycle, not a dead end)
+    p = _straight(shape=(90, 200))
+    r = 45
+    # a band ~2 W wide (narrow enough to pass the wide-blob test), with
+    # bulges: wider than a channel thread and uneven
+    p[r - 24 : r - 16, 70:130] = 1.0
+    p[r - 30 : r - 16, 85:95] = 1.0
+    p[r - 30 : r - 16, 105:112] = 1.0
+    p[r - 16 : r - 2, 72:76] = 1.0
+    p[r - 16 : r - 2, 124:128] = 1.0
+    inp = _channel_inputs(p, W=4.0)
+    inp.centerline[:] = False
+    inp.centerline[r, :] = True
+    res = extract(inp, s, 0.5)
+    assert res.channel[r, 5] and res.channel[r, 195] and res.channel[r, 100]
+    assert not res.channel[r - 20, 100]  # floodplain patch dropped
+    assert res.stats["links_main"] >= 1 and res.stats["floodplain_px"] > 0
+    assert (res.decision == 15).any()
+
+
+def test_network_selection_can_be_switched_off():
+    from rivmapper_v2.process.channel import extract
+
+    p = _straight()
+    p[12:16, 60:140] = 1.0
+    p[12:32, 58:62] = 1.0
+    p[12:32, 138:142] = 1.0
+    on = extract(_channel_inputs(p), ProcessSettings(min_component_w2=1), 0.5)
+    off = extract(
+        _channel_inputs(p),
+        ProcessSettings(min_component_w2=1, network_selection=False),
+        0.5,
+    )
+    assert on.channel[14, 100] and off.channel[14, 100]  # anabranch kept by both
+    assert "links" in on.stats and "links" not in off.stats

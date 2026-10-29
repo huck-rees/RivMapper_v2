@@ -321,6 +321,32 @@ class ProcessSettings(_Section):
     max_inscribed_widths: float = Field(1.25, gt=0)
     dead_end_widths: float = Field(3.0, ge=0)
     dead_end_widths_braided: float = Field(10.0, ge=0)
+    network_selection: bool = Field(
+        True,
+        description="Phase 3 link selection: keep the main path and channel-like "
+        "loops, drop floodplain water attached to the channel (else the phase 1 "
+        "dead-end pruning).",
+    )
+    thread_min_widths: float = Field(
+        0.3, ge=0, description="Second threads at least this × W wide (median)."
+    )
+    thread_max_widths: float = Field(
+        1.6, gt=0, description="... and at most this × W wide (median)."
+    )
+    thread_max_p90_widths: float = Field(
+        2.5, gt=0, description="... with no part (90th percentile) wider than this × W."
+    )
+    thread_min_core: float = Field(
+        0.5, ge=0, le=1, description="... on the low-flow core for at least this share."
+    )
+    thread_max_width_cv: float = Field(
+        0.6, gt=0, description="... and width varying by at most this (CV)."
+    )
+    link_margin_widths: float = Field(
+        0.5,
+        ge=0,
+        description="Pixels kept up to a link's half-width plus this × W from it.",
+    )
     min_component_w2: float = Field(4.0, ge=0)
     fill_hole_w2: float = Field(0.25, ge=0)
     outlier_mad: float = Field(3.0, gt=0)

@@ -24,6 +24,7 @@ subfolder per step::
         │   ├── model/{river}_r{NNN}_posterior.tif   cached HMM probabilities
         │   ├── model/{river}_r{NNN}_window.tif      window context (owner, terminals, reach line)
         │   ├── diagnostics/{river}_r{NNN}_{year}.tif  per-pixel decision codes
+        │   ├── diagnostics/{river}_r{NNN}_{year}_links.csv  network links and decisions
         │   ├── processed/{river}_r{NNN}_{year}.tif  channel masks
         │   ├── qa/{river}_r{NNN}_qa.png         QA figures
         │   ├── {river}_process_masks_qa.csv     one row per reach-year
@@ -140,6 +141,9 @@ class RiverPaths:
 
     def diagnostic(self, ds_order: int, year: int) -> Path:
         return self.diagnostics_dir / f"{self.river}_r{ds_order:03d}_{year}.tif"
+
+    def diagnostic_links(self, ds_order: int, year: int) -> Path:
+        return self.diagnostics_dir / f"{self.river}_r{ds_order:03d}_{year}_links.csv"
 
     @property
     def model_dir(self) -> Path:

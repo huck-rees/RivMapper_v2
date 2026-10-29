@@ -165,6 +165,13 @@ process:
   max_inscribed_widths: {_v(pr["max_inscribed_widths"])}     # wider blobs off the centreline are removed (W, radius)
   dead_end_widths: {_v(pr["dead_end_widths"])}           # dead-end branches longer than this are pruned (W)
   dead_end_widths_braided: {_v(pr["dead_end_widths_braided"])}  # same, braided reaches
+  network_selection: {_v(pr["network_selection"])}       # keep main path + channel-like loops; drop attached floodplain water
+  thread_min_widths: {_v(pr["thread_min_widths"])}         # a second thread is kept if its median width is >= this (W) ...
+  thread_max_widths: {_v(pr["thread_max_widths"])}         # ... and <= this (W) ...
+  thread_max_p90_widths: {_v(pr["thread_max_p90_widths"])}     # ... with no part wider than this (W) ...
+  thread_min_core: {_v(pr["thread_min_core"])}           # ... mostly on the low-flow core (share) ...
+  thread_max_width_cv: {_v(pr["thread_max_width_cv"])}       # ... and an even width (CV)
+  link_margin_widths: {_v(pr["link_margin_widths"])}        # pixels kept up to a link's half-width + this (W)
   min_component_w2: {_v(pr["min_component_w2"])}          # smallest kept component (W²)
   fill_hole_w2: {_v(pr["fill_hole_w2"])}             # largest dry hole filled (W²)
   outlier_mad: {_v(pr["outlier_mad"])}               # year-to-year area check (MADs)

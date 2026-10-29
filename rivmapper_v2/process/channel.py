@@ -57,6 +57,8 @@ DECISIONS = {
     12: "dropped: dead-end branch",
     13: "dropped: piece too small",
     14: "dropped: by the stricter rerun of a high-area year",
+    15: "dropped: floodplain water attached to the channel (off the main path "
+    "and not a channel-like loop)",
 }
 
 
@@ -97,6 +99,7 @@ class ChannelResult:
     core: np.ndarray  # low-flow core mask
     stats: dict = field(default_factory=dict)
     decision: np.ndarray | None = None  # uint8 codes, see DECISIONS
+    links: object = None  # pandas DataFrame from topology.select_links, or None
 
 
 def _disk(r: int) -> np.ndarray:
@@ -322,6 +325,67 @@ def prune_dead_ends(
     return mask & ~drop, int(long_.sum())
 
 
+def _select_network(grown, inp, s, core, term, W):
+    """Step 10 by link selection (topology.py).
+
+    Returns (kept mask, dead-end pixels, floodplain pixels, stats, link
+    table). Falls
+    back to the input unchanged when no main path is found or when the
+    selection would remove most of the mask (a terminal was probably
+    missed).
+    """
+    from . import topology
+
+    lg = topology.build(
+        grown,
+        term,
+        W,
+        p_channel=inp.p_channel,
+        core=core,
+        prev_mask=inp.prev_mask,
+        centerline=inp.centerline,
+    )
+    rule = topology.ThreadRule(
+        width_min_w=s.thread_min_widths,
+        width_max_w=s.thread_max_widths,
+        width_p90_max_w=s.thread_max_p90_widths,
+        min_core_frac=s.thread_min_core,
+        max_width_cv=s.thread_max_width_cv,
+    )
+    max_len = inp.dead_end_px / W if inp.dead_end_px is not None else s.dead_end_widths
+    kept, links = topology.select_links(lg, rule, spur_max_w=max_len)
+    stats_links = links
+    empty = np.zeros_like(grown)
+    counts = links.decision.value_counts()
+    stats = {
+        "links": len(links),
+        "links_main": int(counts.get("main", 0)),
+        "links_thread": int(counts.get("thread", 0)),
+        "links_floodplain": int(
+            counts.get("floodplain_loop", 0) + counts.get("thread_not_in_loop", 0)
+        ),
+        "links_dead_end": int(counts.get("dead_end_or_isolated", 0)),
+    }
+    if not stats["links_main"]:
+        return grown, empty, empty, stats, stats_links
+    out = topology.mask_from_links(grown, lg, kept, W, s.link_margin_widths)
+    out = _keep_touching(out, out & _main_pixels(lg, links))
+    if out.sum() < 0.3 * grown.sum():
+        return grown, empty, empty, stats, stats_links  # never strip most
+    removed = grown & ~out
+    # dead-end vs floodplain: by the link that owns each removed pixel
+    dead_ids = links.index[links.decision == "dead_end_or_isolated"].to_numpy()
+    dead = removed & np.isin(topology.nearest_link(lg), dead_ids)
+    return out, dead, removed & ~dead, stats, stats_links
+
+
+def _main_pixels(lg, links) -> np.ndarray:
+    ids = links.index[links.decision == "main"].to_numpy()
+    sel = np.zeros(int(lg.link_id.max()) + 1, bool)
+    sel[ids] = True
+    return lg.skel & sel[lg.link_id]
+
+
 def extract(
     inp: ChannelInputs, s: ProcessSettings, envelope_threshold: float
 ) -> ChannelResult:
@@ -426,10 +490,20 @@ def extract(
         wide_mask = grown & ~candidate
         grown = candidate
 
-    # 10. dead ends (cutoffs still joined at one end, tributary mouths)
+    # 10. dead ends (cutoffs still joined at one end, tributary mouths) and
+    # floodplain water attached to the channel: link selection on the
+    # skeleton graph (topology.py), or phase 1 dead-end pruning
     pruned = 0
     dead_mask = np.zeros_like(grown)
-    if through:
+    flood_mask = np.zeros_like(grown)
+    link_stats: dict = {}
+    link_table = None
+    if through and s.network_selection:
+        grown, dead_mask, flood_mask, link_stats, link_table = _select_network(
+            grown, inp, s, core, term, W
+        )
+        pruned = link_stats.get("links_dead_end", 0)
+    elif through:
         term = (
             inp.terminals
             if inp.terminals is not None
@@ -462,6 +536,8 @@ def extract(
         "dead_end_px": int(dead_mask.sum()),
         "small_px": int(small_mask.sum()),
         "filled_px": int(filled.sum()),
+        "floodplain_px": int((flood_mask & ~final).sum()),
+        **link_stats,
     }
     # 12. record each pixel's fate (later codes overwrite earlier ones)
     d = np.zeros(final.shape, np.uint8)
@@ -469,10 +545,13 @@ def extract(
     d[water & ~final] = 10
     d[wide_mask & ~final] = 11
     d[dead_mask & ~final] = 12
+    d[flood_mask & ~final] = 15
     d[small_mask & ~final] = 13
     d[final] = 2
     d[final & ((bridges | joined_px) & ~core)] = 3
     d[core_out] = 1
     d[filled & ~core] = 4
     stats["not_connected_px"] = int((d == 10).sum())
-    return ChannelResult(channel=final, core=core_out, stats=stats, decision=d)
+    return ChannelResult(
+        channel=final, core=core_out, stats=stats, decision=d, links=link_table
+    )

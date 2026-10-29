@@ -373,11 +373,24 @@ def _process_window(river, layout, paths, window, years, status, env_thr, lines)
             terminals=term,
         )
 
+    def links_in_centre(res):
+        t = res.links
+        if t is None or not len(t):
+            return None
+        r = np.clip(np.round(t["row"]).astype(int), 0, owner.shape[0] - 1)
+        c = np.clip(np.round(t["col"]).astype(int), 0, owner.shape[1] - 1)
+        t = t[owner[r, c] == o].copy()
+        gw = window.grid
+        t.insert(0, "x", gw.x0 + (t.pop("col") + 0.5) * gw.res)
+        t.insert(1, "y", gw.y0 - (t.pop("row") + 0.5) * gw.res)
+        return t
+
     def keep(res, thr):
         return {
             "channel": res.channel[sub] & centre,
             "core": res.core[sub] & centre,
             "decision": res.decision[sub] if res.decision is not None else None,
+            "links": links_in_centre(res) if s.keep_diagnostics else None,
             "stats": res.stats,
             "threshold": thr,
         }
@@ -744,6 +757,9 @@ def process_masks(river: River, config_path: Path | None = None) -> StepResult:
                     inside,
                     {"river": river.name, "ds_order": str(o), "year": str(y)},
                 )
+                lk = res.get("links") if res is not None else None
+                if lk is not None:
+                    lk.round(4).to_csv(p.diagnostic_links(o, y), index_label="link")
             rows.append(row)
         thumbs_all[o] = thumbs
         pd.DataFrame([r for r in rows if r["ds_order"] == o]).to_csv(
