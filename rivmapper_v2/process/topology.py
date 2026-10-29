@@ -412,7 +412,8 @@ def mask_from_links(
     """Mask pixels within reach of a kept link.
 
     A pixel is kept when its nearest *kept* skeleton pixel is no farther
-    than that link's half-width (at least 0.5 W) plus ``margin_w`` × W. So
+    than the local half-width there (at least 0.5 W, at most the link's
+    90th-percentile half-width) plus ``margin_w`` × W. So
     a lake fused to the bank is cut off at the channel's edge, and the
     pixels of a dropped branch that lie inside the kept channel (e.g. at a
     tributary mouth) stay.
@@ -436,10 +437,13 @@ def mask_from_links(
         lid[fix] = lid[ri[fix], ci[fix]]
     d, (ri, ci) = ndi.distance_transform_edt(~on, return_indices=True)
     owner = lid[ri, ci]
-    # never narrower than half a channel width (tiny links have small widths)
-    half = np.zeros(int(lg.link_id.max()) + 1)
-    half[lg.links.index.to_numpy()] = (
-        0.5 * np.maximum(lg.links.width_w.to_numpy(), 1.0) * W
+    # The limit follows the channel's local half-width at the nearest kept
+    # skeleton pixel, between 0.5 W and the link's 90th-percentile half-width
+    # (so a lake bulging from the bank is still cut at the channel's edge).
+    local = ndi.distance_transform_edt(mask)[ri, ci]
+    cap = np.full(int(lg.link_id.max()) + 1, 0.5 * W)
+    cap[lg.links.index.to_numpy()] = np.maximum(
+        0.5 * lg.links.width_p90_w.to_numpy() * W, 0.5 * W
     )
-    lim = half[owner] + margin_w * W
+    lim = np.clip(local, 0.5 * W, cap[owner]) + margin_w * W
     return mask & (d <= lim)
