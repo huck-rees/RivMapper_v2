@@ -28,7 +28,12 @@ farthest distance from the corridor, share on the low-flow core, mean
 probabilities, persistence (share of the piece that was channel 1 and 2
 years before and after), its pixels' channel frequency over the whole
 record, and its share of the reach-year's channel. Context: stage
-percentile, braided reach, channel width in pixels, sparse/inferred year.
+percentile, braided reach, sparse/inferred year. The channel width in
+pixels is left out on purpose: on the Ok Tedi it acted as a proxy for
+position along the river (alone it scored AUC 0.89, because the wide lowland
+reaches held most of the floodplain water) and would not transfer to other
+rivers. Without it, leave-one-reach-out accuracy was 0.87 (AUC 0.94) on 276
+Ok Tedi labels.
 Every piece and its features are written to
 `masks/pieces/{river}_r{NNN}_pieces.csv`.
 

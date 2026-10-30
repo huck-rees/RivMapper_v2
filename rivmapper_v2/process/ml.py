@@ -10,8 +10,10 @@ survive renumbering when the piece code changes.
 Model: gradient-boosted trees (scikit-learn ``HistGradientBoostingClassifier``).
 Missing values (the persistence of a piece next to a no-data year, stage
 without discharge) are coded −1. Features are the piece measurements in ``units.FEATURES``
-plus context (stage percentile, braided reach, log channel width in pixels,
-sparse/inferred year). Accuracy is estimated by grouped cross-validation:
+plus context (stage percentile, braided reach, sparse/inferred year). The
+channel width in pixels is deliberately not a feature: on the Ok Tedi it
+stood in for position along the river (wide lowland reaches held most of the
+floodplain water), which would not carry to other rivers. Accuracy is estimated by grouped cross-validation:
 whole reaches are held out, so the score reflects reaches the model has not
 seen. The saved model file holds the fitted model, the feature list, the
 cross-validated metrics and the label counts.
@@ -31,9 +33,9 @@ from . import units
 log = logging.getLogger(__name__)
 
 LABELS = {"channel": 1, "not_channel": 0}
-CONTEXT_FEATURES = ("q_scene_pctile", "braided", "log_w_px", "sparse_or_inferred")
+CONTEXT_FEATURES = ("q_scene_pctile", "braided", "sparse_or_inferred")
 FEATURES = tuple(units.FEATURES) + CONTEXT_FEATURES
-MODEL_VERSION = 1
+MODEL_VERSION = 2
 MISSING = -1.0
 
 
@@ -44,7 +46,6 @@ def design(table: pd.DataFrame) -> pd.DataFrame:
         X[f] = pd.to_numeric(table.get(f), errors="coerce")
     X["q_scene_pctile"] = pd.to_numeric(table.get("q_scene_pctile"), errors="coerce")
     X["braided"] = table.get("braided", False).astype(str).str.lower().isin(["true", "1"]).astype(float)
-    X["log_w_px"] = np.log(pd.to_numeric(table.get("w_px"), errors="coerce"))
     X["sparse_or_inferred"] = table.get("status", "").astype(str).isin(["sparse", "inferred"]).astype(float)
     # missing (no neighbouring year, no discharge) -> -1: all features are
     # >= 0, so the trees can still split on "missing"
