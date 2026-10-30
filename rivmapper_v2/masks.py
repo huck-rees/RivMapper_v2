@@ -56,6 +56,7 @@ import numpy as np
 import pandas as pd
 
 from .config import ConfigError, Project, River
+from .crs import crs_to_string
 from .gee import COUNT_BANDS_V2, NODATA, QA_MASK_BITS, Grid
 from .provenance import recorded_parameters, write_run_record
 from .results import FAILED, OK, STALE, StepResult, check_existing
@@ -646,8 +647,7 @@ def extract_masks(
     polys = gpd.read_file(p.reach_polygons)
     if polys.crs is None or polys.crs.is_geographic:
         raise ConfigError([f"{river.name}: reach polygons must be in a projected CRS"])
-    epsg = polys.crs.to_epsg()
-    crs = f"EPSG:{epsg}" if epsg else polys.crs.to_wkt()
+    crs = crs_to_string(polys.crs)
 
     m = river.masks
     lo = m.reach_start or 1
@@ -881,11 +881,7 @@ def _screen_only(river: River, backend, reaches, years) -> StepResult:
     """Write the scene manifest for every reach-year; download nothing."""
     p = river.paths
     zones = _reference_zones(river, reaches)
-    crs = (
-        f"EPSG:{reaches.crs.to_epsg()}"
-        if reaches.crs.to_epsg()
-        else reaches.crs.to_wkt()
-    )
+    crs = crs_to_string(reaches.crs)
     origin = river_origin(tuple(reaches.total_bounds))
     done = set()
     if p.scene_manifest.exists() and not river.overwrite:

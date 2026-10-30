@@ -48,7 +48,15 @@ def choose_analysis_crs(
     )
 
 
-def crs_to_string(crs: CRS) -> str:
-    """EPSG code if the CRS has one, otherwise WKT2."""
+def crs_to_string(crs) -> str:
+    """"EPSG:n" if the CRS has an EPSG code, otherwise WKT1 (GDAL dialect).
+
+    Earth Engine parses only WKT1; pyproj's default ``to_wkt()`` is WKT2,
+    which EE rejects ("The CRS of a map projection could not be parsed").
+    Rasterio and GeoPandas read either. Accepts a pyproj or rasterio CRS.
+    """
+    if crs is None:
+        return ""
+    crs = CRS.from_user_input(crs)
     epsg = crs.to_epsg()
-    return f"EPSG:{epsg}" if epsg else crs.to_wkt()
+    return f"EPSG:{epsg}" if epsg else crs.to_wkt("WKT1_GDAL")

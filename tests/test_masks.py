@@ -546,3 +546,17 @@ def test_outdated_files_are_redone_without_overwrite(mask_project):
     assert json.loads(rasterio.open(path).tags()["rivmapper_params"])["product"] == (
         "dswe_counts_v2"
     )
+
+
+def test_custom_crs_strings_are_wkt1_for_earth_engine():
+    """A non-EPSG analysis CRS (laea for rivers spanning UTM zones) must go to
+    Earth Engine as WKT1; EE rejects pyproj's default WKT2."""
+    from pyproj import CRS
+
+    from rivmapper_v2.crs import crs_to_string
+
+    laea = CRS.from_proj4("+proj=laea +lat_0=-25 +lon_0=-61 +datum=WGS84 +units=m")
+    s = crs_to_string(laea)
+    assert s.startswith("PROJCS[") and "Lambert_Azimuthal_Equal_Area" in s
+    assert CRS.from_user_input(s).equals(laea)
+    assert crs_to_string(CRS.from_epsg(32754)) == "EPSG:32754"

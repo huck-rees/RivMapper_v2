@@ -30,6 +30,7 @@ import geopandas as gpd
 import numpy as np
 from shapely.geometry.base import BaseGeometry
 
+from ..crs import crs_to_string
 from ..gee import COUNT_BANDS, NODATA, Grid
 from ..masks import RES, reach_grid, river_origin
 from ..paths import RiverPaths
@@ -41,8 +42,7 @@ def crs_string(gdf: gpd.GeoDataFrame) -> str:
     """The CRS string extraction used for this river ("EPSG:n" or WKT)."""
     if gdf.crs is None or gdf.crs.is_geographic:
         raise ValueError("reach polygons must be in a projected CRS")
-    epsg = gdf.crs.to_epsg()
-    return f"EPSG:{epsg}" if epsg else gdf.crs.to_wkt()
+    return crs_to_string(gdf.crs)
 
 
 def offset(inner: Grid, outer: Grid) -> tuple[int, int]:
@@ -298,10 +298,8 @@ def read_raw(path: Path, bands: Sequence[str]) -> tuple[Grid, dict[str, np.ndarr
         if missing:
             raise ValueError(f"{path.name}: no band(s) {missing}")
         t = src.transform
-        crs = src.crs
-        epsg = crs.to_epsg() if crs else None
         grid = Grid(
-            f"EPSG:{epsg}" if epsg else (crs.to_wkt() if crs else ""),
+            crs_to_string(src.crs),
             t.c,
             t.f,
             t.a,
