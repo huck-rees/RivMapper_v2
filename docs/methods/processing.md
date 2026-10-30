@@ -163,6 +163,11 @@ The oxbow is removed from the first year after the cutoff. The avulsion's new co
 
 27 reach-years are flagged as area outliers. Most are stage, not mapping error: the lower reaches (15–19) are high in 1999–2000 and low in 2015, the El Niño drought year when the Fly was too low for shipping.
 
+Known limits after phase 3's network selection (to revisit with the braided test rivers, Bermejo, before any further tuning):
+
+- Cut-off loops whose connection to the river is only 1–2 px wide (Ok Tedi reaches 10 and 19) drop out in years when Landsat misses that connection, then return. Bridging along last year's channel across observed-dry pixels would remove this but delay a real closure by a year; deliberately not done until the rules have been tested on braided reaches.
+- The thread, persistence and lattice thresholds were tuned on one meandering river and the synthetic suite only.
+
 Known limits, for phases 2–3:
 
 - The upper Ok Tedi (reaches 1–4, W = 3.5–3.7 px) never forms one path between its window's terminals, so the fallback (all seeded pieces) applies. Masks are clean (typically 1–4 pieces against 10–30 for the baseline) but not strictly continuous.
