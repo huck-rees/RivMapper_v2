@@ -249,10 +249,14 @@ def join_reaches(
 
     Candidates within ``search_km`` of the reach's downstream end whose
     upstream area is within a factor ``tol`` of the reach's (SWORD
-    ``us_drain_ar``, km²): the nearest (``area_matched``). Else the best
-    area match within twice the radius (``best_area_2x_radius``), else the
-    nearest candidate (``nearest_unmatched``). Without areas: the nearest
-    (``nearest``).
+    ``us_drain_ar``, km²): the nearest (``area_matched``). Else, candidates
+    within ``search_km`` of the reach line itself, area-matched, nearest to
+    the downstream end (``area_matched_on_reach``): a reach ending just
+    above a confluence has, near its end, only cells below the confluence
+    on a 0.05° grid, but a matching cell further up the same reach. Else
+    the best area match within twice the radius (``best_area_2x_radius``),
+    else the nearest candidate (``nearest_unmatched``). Without areas: the
+    nearest (``nearest``).
     """
     lines, ends = _reach_ends(lines)
     ends_ll = gpd.GeoSeries(
@@ -278,9 +282,16 @@ def join_reaches(
         log_r = np.abs(np.log(np.where(ratio > 0, ratio, np.nan)))
         near = d_km <= search_km
         ok = near & (log_r <= math.log(tol)) if has_area else near
+        on_reach = np.zeros(len(links), bool)
+        if has_area and not ok.any():
+            d_line = pts.distance(lines.loc[o, "geometry"]).to_numpy() / 1000.0
+            on_reach = (d_line <= search_km) & (log_r <= math.log(tol))
         if ok.any():
             i = int(np.flatnonzero(ok)[np.argmin(d_km[ok])])
             method = "area_matched" if has_area else "nearest"
+        elif on_reach.any():
+            i = int(np.flatnonzero(on_reach)[np.argmin(d_km[on_reach])])
+            method = "area_matched_on_reach"
         else:
             wider = d_km <= 2 * search_km
             if has_area and np.isfinite(log_r[wider]).any():
@@ -539,7 +550,9 @@ def discharge(
         },
         summary=summary,
     )
-    unmatched = int((~join["method"].isin(["area_matched", "manual"])).sum())
+    unmatched = int(
+        (~join["method"].isin(["area_matched", "area_matched_on_reach", "manual"])).sum()
+    )
     return StepResult(
         river.name,
         STEP,

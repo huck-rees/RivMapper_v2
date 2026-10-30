@@ -80,9 +80,12 @@ def test_join_prefers_area_match_over_nearest(stage_project):
     assert join.cell_row.isna().all()  # grid columns are GloFAS only
     assert (join.method == "area_matched").all()
     assert join.dist_km.between(0.9, 1.1).all()
-    # a tight radius leaves no area match: best area within 2x radius
+    # a tight radius leaves no area match near the reach end: the
+    # area-matched cell along the reach line is taken, else the best area
+    # within 2x radius
     join2 = join_reaches(lines, src, search_km=0.6, tol=2)
-    assert (join2.method == "best_area_2x_radius").all()
+    assert join2.method.isin(["area_matched_on_reach", "best_area_2x_radius"]).all()
+    assert (join2.river_id % 10 == 0).all()  # still the mainstem
 
 
 def test_stage_table_flags_low_and_high_years():
