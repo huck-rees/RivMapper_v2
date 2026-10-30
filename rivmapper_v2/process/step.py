@@ -102,7 +102,7 @@ def _parameters(river: River, raw_fp: dict) -> dict:
         "raw_product": raw_fp.get("product"),
         "years": [river.masks.year_start, river.masks.year_end],
         # keep_diagnostics changes what is written, not the masks
-        **river.process.model_dump(mode="json", exclude={"keep_diagnostics"}),
+        **river.process.model_dump(mode="json", exclude={"keep_diagnostics", "clean_model", "clean_threshold"}),
     }
 
 

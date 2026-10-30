@@ -173,6 +173,8 @@ process:
   thread_max_width_cv: {_v(pr["thread_max_width_cv"])}       # ... and an even width (CV)
   thread_persistence: {_v(pr["thread_persistence"])}      # last year's channel links pass looser limits (less flicker)
   braided_min_chan: {_v(pr["braided_min_chan"])}         # braided reach: share of SWORD nodes with n_chan_mod > 1
+  clean_model: {_v(pr["clean_model"])}           # step clean_masks: trained piece classifier (.joblib); null = write pieces only
+  clean_threshold: {_v(pr["clean_threshold"])}       # pieces with P(channel) below this are removed
   link_margin_widths: {_v(pr["link_margin_widths"])}        # pixels kept up to a link's half-width + this (W)
   min_component_w2: {_v(pr["min_component_w2"])}          # smallest kept component (W²)
   fill_hole_w2: {_v(pr["fill_hole_w2"])}             # largest dry hole filled (W²)

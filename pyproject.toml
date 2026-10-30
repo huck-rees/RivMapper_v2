@@ -34,6 +34,11 @@ dependencies = [
 rivmapper = "rivmapper_v2.cli:main"
 
 [project.optional-dependencies]
+ml = [
+    # step clean_masks with a model, `rivmapper ml train`
+    "scikit-learn>=1.3",
+    "joblib",
+]
 discharge = [
     # GloFAS (default source)
     "xarray",

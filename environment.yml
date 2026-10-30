@@ -30,6 +30,8 @@ dependencies:
   - zarr
   - s3fs
   - pyarrow
+  # learned mask cleaning (clean_masks with a model, rivmapper ml train)
+  - scikit-learn
   - pytest
   - pip
   - pip:

@@ -7,8 +7,9 @@ from collections.abc import Callable, Iterable
 
 import pandas as pd
 
-from . import discharge, masks, reaches, sword
+from . import discharge, imagery, masks, reaches, sword
 from .config import Project, River
+from .process import clean as clean_step
 from .process import step as process_step
 from .results import BLOCKED, StepResult
 
@@ -21,11 +22,15 @@ STEPS: dict[str, StepFn] = {
     sword.STEP: sword.run,
     reaches.STEP: reaches.run,
     masks.STEP: masks.run,
+    imagery.STEP: imagery.run,
     discharge.STEP: discharge.run,
     process_step.STEP: process_step.run,
+    clean_step.STEP: clean_step.run,
 }
 # Steps whose failure does not block later steps (their outputs are extras).
-OPTIONAL_STEPS = {discharge.STEP}
+OPTIONAL_STEPS = {discharge.STEP, imagery.STEP, clean_step.STEP}
+# Steps that run only when named (--steps), not in a default run.
+EXPLICIT_STEPS = {imagery.STEP}
 
 
 def run_pipeline(
@@ -41,7 +46,7 @@ def run_pipeline(
     Returns:
         One row per (river, step) with status and message.
     """
-    wanted = list(steps) if steps else list(STEPS)
+    wanted = list(steps) if steps else [s for s in STEPS if s not in EXPLICIT_STEPS]
     unknown = [s for s in wanted if s not in STEPS]
     if unknown:
         raise KeyError(f"Unknown step(s) {unknown}. Available: {list(STEPS)}")

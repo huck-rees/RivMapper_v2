@@ -26,6 +26,9 @@ subfolder per step::
         │   ├── diagnostics/{river}_r{NNN}_{year}.tif  per-pixel decision codes
         │   ├── diagnostics/{river}_r{NNN}_{year}_links.csv  network links and decisions
         │   ├── processed/{river}_r{NNN}_{year}.tif  channel masks
+        │   ├── rgb/{river}_r{NNN}_{year}.tif        true-colour composites (export_rgb)
+        │   ├── pieces/{river}_r{NNN}_pieces.csv     candidate pieces + features (clean_masks)
+        │   ├── cleaned/{river}_r{NNN}_{year}.tif    masks after the learned cleaning step
         │   ├── qa/{river}_r{NNN}_qa.png         QA figures
         │   ├── {river}_process_masks_qa.csv     one row per reach-year
         │   └── {river}_process_masks_run.yaml
@@ -48,7 +51,15 @@ from pathlib import Path
 
 # Pipeline steps in run order (kept here, dependency-free, so the CLI can
 # list them without importing the heavy step modules).
-STEP_NAMES = ("sword", "reaches", "extract_masks", "discharge", "process_masks")
+STEP_NAMES = (
+    "sword",
+    "reaches",
+    "extract_masks",
+    "export_rgb",
+    "discharge",
+    "process_masks",
+    "clean_masks",
+)
 
 
 def sword_continent_files(
@@ -126,6 +137,33 @@ class RiverPaths:
     @property
     def scene_manifest(self) -> Path:
         return self.masks_dir / f"{self.river}_scene_manifest.csv"
+
+    # ── step: export_rgb (optional) ─────────────────────────────────
+    @property
+    def rgb_dir(self) -> Path:
+        return self.masks_dir / "rgb"
+
+    def rgb(self, ds_order: int, year: int) -> Path:
+        return self.rgb_dir / f"{self.river}_r{ds_order:03d}_{year}.tif"
+
+    # ── step: clean_masks / labelling ───────────────────────────────
+    @property
+    def pieces_dir(self) -> Path:
+        return self.masks_dir / "pieces"
+
+    def pieces_table(self, ds_order: int) -> Path:
+        return self.pieces_dir / f"{self.river}_r{ds_order:03d}_pieces.csv"
+
+    @property
+    def cleaned_masks_dir(self) -> Path:
+        return self.masks_dir / "cleaned"
+
+    def cleaned_mask(self, ds_order: int, year: int) -> Path:
+        return self.cleaned_masks_dir / f"{self.river}_r{ds_order:03d}_{year}.tif"
+
+    @property
+    def labels_dir(self) -> Path:
+        return self.river_dir / "labels"
 
     # ── step: process_masks ─────────────────────────────────────────
     @property

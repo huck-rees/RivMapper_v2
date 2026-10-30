@@ -113,6 +113,62 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 1 if {"failed", "blocked", "stale"} & set(counts) else 0
 
 
+def cmd_label(args: argparse.Namespace) -> int:
+    from .config import Project
+    from .process import label
+
+    project = Project.load(args.config)
+    for r in project.select(_split(args.rivers)):
+        index = label.build(r, n=args.n, seed=args.seed)
+        print(f"{r.name}: open {index}")
+        print(f"  then save the exported CSV in {r.paths.labels_dir}")
+    return 0
+
+
+def cmd_ml(args: argparse.Namespace) -> int:
+    import pandas as pd
+
+    from .config import Project
+    from .process import clean, ml
+    from .process.windows import RiverLayout
+
+    data = []
+    for cfg in args.configs:
+        project = Project.load(cfg)
+        for r in project.rivers:
+            f = r.paths.labels_dir / f"{r.name}_labels.csv"
+            if not f.exists():
+                print(f"{r.name}: no labels at {f}; skipped")
+                continue
+            labels = pd.read_csv(f)
+            qa = pd.read_csv(r.paths.process_qa_table, keep_default_na=False, na_values=[""])
+            years = sorted(qa["year"].unique().tolist())
+            layout = RiverLayout.from_paths(r.paths)
+            for o, g in labels.groupby("ds_order"):
+                o = int(o)
+                table, labs = clean.reach_pieces(
+                    r, o, years, layout.width_px(o), qa[qa.ds_order == o]
+                )
+                arrays = {(o, int(y)): a for y, a in labs.items()}
+                m = ml.match_labels(g, table, arrays)
+                print(f"{r.name} reach {o}: {len(m)} of {len(g)} labels matched")
+                data.append(m)
+    if not data:
+        print("No labels found.")
+        return 1
+    metrics = ml.train(pd.concat(data, ignore_index=True), Path(args.out))
+    print(
+        f"\nTrained on {metrics['n_labels']} labels "
+        f"({metrics['n_channel']} channel, {metrics['n_not_channel']} not) from "
+        f"{', '.join(metrics['rivers'])}"
+    )
+    print(f"Cross-validation ({metrics['cv']}): accuracy {metrics['cv_accuracy']}, "
+          f"AUC {metrics['cv_auc']}")
+    print(f"  {metrics['cv_confusion']}")
+    print(f"Model: {args.out}  (set process.clean_model to use it)")
+    return 0
+
+
 def cmd_data(args: argparse.Namespace) -> int:
     from . import data
 
@@ -269,6 +325,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--overwrite", action="store_true", help="rebuild outputs even if they exist"
     )
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser(
+        "label", help="build the offline page for labelling candidate pieces"
+    )
+    p.add_argument("config", help="path to rivmapper.yaml")
+    p.add_argument("--rivers", help="comma-separated river names (default: all)")
+    p.add_argument("--n", type=int, default=300, help="pieces to sample per river")
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(func=cmd_label)
+
+    p = sub.add_parser("ml", help="train the piece classifier on labels")
+    p.add_argument("action", choices=["train"])
+    p.add_argument("configs", nargs="+", help="rivmapper.yaml file(s) with labelled rivers")
+    p.add_argument("--out", required=True, help="model file to write (.joblib)")
+    p.set_defaults(func=cmd_ml)
 
     p = sub.add_parser(
         "data", help="list, download, verify or cite external datasets (SWORD, ...)"

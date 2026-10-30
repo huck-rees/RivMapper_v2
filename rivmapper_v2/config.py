@@ -372,6 +372,18 @@ class ProcessSettings(_Section):
     resolvable_px: float = Field(
         3.0, gt=0, description="Reaches narrower than this many pixels are flagged."
     )
+    clean_model: Path | None = Field(
+        None,
+        description="Step clean_masks: trained piece classifier (.joblib, from "
+        "`rivmapper ml train`); relative to the YAML file. None = only write the "
+        "candidate pieces (for labelling).",
+    )
+    clean_threshold: float = Field(
+        0.5,
+        gt=0,
+        lt=1,
+        description="Pieces with P(channel) below this are removed by clean_masks.",
+    )
     keep_diagnostics: bool = Field(
         True,
         description="Write per-pixel decision rasters and window context files.",
@@ -748,6 +760,8 @@ def load_settings(config_path: Path) -> ProjectSettings:
         settings.gee.key_file = _resolve(settings.gee.key_file, base)
     if settings.discharge.glofas_dir is not None:
         settings.discharge.glofas_dir = _resolve(settings.discharge.glofas_dir, base)
+    if settings.process.clean_model is not None:
+        settings.process.clean_model = _resolve(settings.process.clean_model, base)
     return settings
 
 
