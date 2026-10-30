@@ -49,8 +49,12 @@ def composite(tile_geom, year: int, scene_ids=None):
     col = gee.landsat_collection(tile_geom, f"{year}-01-01", f"{year + 1}-01-01")
     if scene_ids:
         col = col.filter(ee.Filter.inList("scene_id", scene_ids))
-    img = col.select(["Red", "Green", "Blue"]).median()
-    return img.divide(RGB_MAX).multiply(255).clamp(0, 255).toUint8().unmask(0)
+    bands = ["Red", "Green", "Blue"]
+    img = col.select(bands).median()
+    rgb = img.divide(RGB_MAX).multiply(255).clamp(0, 255).toUint8().unmask(0)
+    # a year with no usable scene: median() has no bands -> all-zero image
+    zero = ee.Image.constant([0, 0, 0]).rename(bands).toUint8()
+    return ee.Image(ee.Algorithms.If(col.size().gt(0), rgb, zero))
 
 
 def write_rgb(path, grid, arr: np.ndarray, tags: dict) -> None:
@@ -93,7 +97,7 @@ def export_rgb(river: River, years: list[int] | None = None) -> StepResult:
     m = river.masks
     years = years or list(range(m.year_start, m.year_end + 1))
     manifest = pd.read_csv(p.scene_manifest) if p.scene_manifest.exists() else None
-    done = skipped = 0
+    done = skipped = failed = 0
     for _, reach in polys.iterrows():
         o = int(reach["ds_order"])
         grid = reach_grid(tuple(reach.geometry.bounds), origin, crs, RES)
@@ -104,11 +108,18 @@ def export_rgb(river: River, years: list[int] | None = None) -> StepResult:
                 continue
             arr = np.zeros((3, grid.height, grid.width), np.uint8)
             ids = _kept_scenes(manifest, o, y)
-            for r, c, sub in chunks(grid, TILE_PX):
-                img = composite(gee.grid_geometry(sub), y, ids)
-                px = with_rate_retry(gee.compute_pixels, img, sub, ["Red", "Green", "Blue"])
-                for i, b in enumerate(("Red", "Green", "Blue")):
-                    arr[i, r : r + sub.height, c : c + sub.width] = px[b]
+            try:
+                for r, c, sub in chunks(grid, TILE_PX):
+                    img = composite(gee.grid_geometry(sub), y, ids)
+                    px = with_rate_retry(
+                        gee.compute_pixels, img, sub, ["Red", "Green", "Blue"]
+                    )
+                    for i, b in enumerate(("Red", "Green", "Blue")):
+                        arr[i, r : r + sub.height, c : c + sub.width] = px[b]
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                log.warning("  r%03d %d failed: %s", o, y, str(e)[:120])
+                continue
             write_rgb(
                 out,
                 grid,
@@ -118,9 +129,10 @@ def export_rgb(river: River, years: list[int] | None = None) -> StepResult:
             )
             done += 1
         log.info("  reach %d: RGB written", o)
-    return StepResult(
-        river.name, STEP, OK, f"{done} RGB composites written, {skipped} already there"
-    )
+    msg = f"{done} RGB composites written, {skipped} already there"
+    if failed:
+        msg += f", {failed} failed (rerun to retry them)"
+    return StepResult(river.name, STEP, FAILED if failed and not done else OK, msg)
 
 
 def run(project: Project, rivers: list[River]) -> list[StepResult]:
