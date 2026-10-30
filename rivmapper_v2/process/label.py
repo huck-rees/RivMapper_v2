@@ -34,7 +34,7 @@ from . import clean
 
 log = logging.getLogger(__name__)
 
-PANEL = 280
+PANEL = 360
 
 
 def sample(pieces: pd.DataFrame, n: int, seed: int = 0) -> pd.DataFrame:
@@ -58,7 +58,9 @@ def sample(pieces: pd.DataFrame, n: int, seed: int = 0) -> pd.DataFrame:
 def _crop_box(lab: np.ndarray, pid: int, w_px: float):
     rr, cc = np.nonzero(lab == pid)
     r0, r1, c0, c1 = rr.min(), rr.max(), cc.min(), cc.max()
-    half = int(max(r1 - r0, c1 - c0, 30 * w_px, 80))
+    # the piece fills about half the frame, with at least ~12 W of river
+    # around it for context
+    half = int(max(1.0 * max(r1 - r0, c1 - c0), 6 * w_px, 30))
     rc, ccn = (r0 + r1) // 2, (c0 + c1) // 2
     return (max(rc - half, 0), min(rc + half, lab.shape[0]),
             max(ccn - half, 0), min(ccn + half, lab.shape[1]))
@@ -93,8 +95,17 @@ def render(river: River, row, stack, labs, corridors, w_px, freq, out: Path) -> 
         import rasterio
 
         with rasterio.open(rgb_path) as s:
-            bg = np.moveaxis(s.read(), 0, -1)[sl] / 255.0
-        bg_title = f"Landsat {y} (median)"
+            raw = np.moveaxis(s.read(), 0, -1)[sl].astype(float)
+        valid = raw.sum(-1) > 0
+        if valid.sum() > 20:
+            # stretch this crop to its own 2–98 % range for contrast
+            lo, hi = np.percentile(raw[valid], [2, 98])
+            bg = np.clip((raw - lo) / max(hi - lo, 1.0), 0, 1)
+            bg[~valid] = 0
+            bg_title = f"Landsat {y} (median, stretched)"
+        else:
+            bg = np.zeros(raw.shape)
+            bg_title = f"Landsat {y}: no clear scenes"
     else:
         bg = np.stack([1 - freq[sl] * 0.8] * 3, -1)
         bg_title = "water frequency (no RGB)"

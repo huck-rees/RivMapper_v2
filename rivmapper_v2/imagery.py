@@ -4,8 +4,10 @@ One uint8 RGB GeoTIFF per reach-year, on exactly the same 30 m river grid
 as the raw counts and the masks (``masks/rgb/{river}_r{NNN}_{year}.tif``):
 the per-pixel median of the year's cloud-masked Landsat surface
 reflectance (the scenes kept by scene screening when the manifest has
-them), red / green / blue stretched linearly from 0–``RGB_MAX`` reflectance
-to 0–255. Pixels with no clear look are 0 in all bands.
+them; Landsat 7 after its scan-line failure only in ``masks.le07_gap_years``,
+as for the masks), red / green / blue stretched linearly from 0–``RGB_MAX`` reflectance
+to 0–255. Pixels with no clear look are 0 in all bands. An existing file
+that is entirely 0 is redone on the next run.
 
 Not part of a default run (``rivmapper run … --steps export_rgb``): it is
 for people, not for the masks. Existing files are kept unless --overwrite.
@@ -41,12 +43,18 @@ def _kept_scenes(manifest: pd.DataFrame | None, o: int, year: int):
     return list(ids) if len(ids) else None
 
 
-def composite(tile_geom, year: int, scene_ids=None):
-    """ee.Image: uint8 R, G, B median composite for ``year``."""
+def composite(tile_geom, year: int, scene_ids=None, le07_slc_off: bool = False):
+    """ee.Image: uint8 R, G, B median composite for ``year``.
+
+    ``le07_slc_off``: include Landsat 7 after its scan-line failure (the
+    gap years the masks also use, e.g. 2012).
+    """
     from . import gee
 
     ee = gee._ee()
-    col = gee.landsat_collection(tile_geom, f"{year}-01-01", f"{year + 1}-01-01")
+    col = gee.landsat_collection(
+        tile_geom, f"{year}-01-01", f"{year + 1}-01-01", le07_slc_off=le07_slc_off
+    )
     if scene_ids:
         col = col.filter(ee.Filter.inList("scene_id", scene_ids))
     bands = ["Red", "Green", "Blue"]
@@ -55,6 +63,15 @@ def composite(tile_geom, year: int, scene_ids=None):
     # a year with no usable scene: median() has no bands -> all-zero image
     zero = ee.Image.constant([0, 0, 0]).rename(bands).toUint8()
     return ee.Image(ee.Algorithms.If(col.size().gt(0), rgb, zero))
+
+
+def _all_zero(path) -> bool:
+    """An existing composite with no data (e.g. a gap year exported before
+    Landsat 7 was included): redone without --overwrite."""
+    import rasterio
+
+    with rasterio.open(path) as s:
+        return not s.read(1).any()
 
 
 def write_rgb(path, grid, arr: np.ndarray, tags: dict) -> None:
@@ -103,14 +120,16 @@ def export_rgb(river: River, years: list[int] | None = None) -> StepResult:
         grid = reach_grid(tuple(reach.geometry.bounds), origin, crs, RES)
         for y in years:
             out = p.rgb(o, y)
-            if out.exists() and not river.overwrite:
+            if out.exists() and not river.overwrite and not _all_zero(out):
                 skipped += 1
                 continue
             arr = np.zeros((3, grid.height, grid.width), np.uint8)
             ids = _kept_scenes(manifest, o, y)
             try:
                 for r, c, sub in chunks(grid, TILE_PX):
-                    img = composite(gee.grid_geometry(sub), y, ids)
+                    img = composite(
+                        gee.grid_geometry(sub), y, ids, le07_slc_off=y in m.le07_gap_years
+                    )
                     px = with_rate_retry(
                         gee.compute_pixels, img, sub, ["Red", "Green", "Blue"]
                     )
