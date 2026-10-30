@@ -88,8 +88,7 @@ def render(river: River, row, stack, labs, corridors, w_px, freq, out: Path) -> 
     lab = labs[y]
     r0, r1, c0, c1 = _crop_box(lab, pid, w_px)
     sl = (slice(r0, r1), slice(c0, c1))
-    edge = (lab == pid) & ~ndi.binary_erosion(lab == pid)
-    edge = ndi.binary_dilation(edge, iterations=1)
+    piece = lab == pid
     rgb_path = river.paths.rgb(int(row["ds_order"]), y)
     if rgb_path.exists():
         import rasterio
@@ -109,14 +108,12 @@ def render(river: River, row, stack, labs, corridors, w_px, freq, out: Path) -> 
     else:
         bg = np.stack([1 - freq[sl] * 0.8] * 3, -1)
         bg_title = "water frequency (no RGB)"
-    bg = bg.copy()
-    bg[edge[sl]] = (1.0, 0.1, 0.1)
-    panels = [(bg, bg_title)]
+    panels = [(bg, bg_title, True)]
     for k in (-1, 0, 1):
         yy = y + k
         a = stack.get(yy)
         if a is None:
-            panels.append((np.full(bg.shape, 0.9), f"{yy}: no data"))
+            panels.append((np.full(bg.shape, 0.9), f"{yy}: no data", True))
             continue
         ch = a[0] == 1
         if k == 0:
@@ -125,11 +122,14 @@ def render(river: River, row, stack, labs, corridors, w_px, freq, out: Path) -> 
         else:
             pan = np.ones(ch.shape + (3,))
             pan[ch] = (0.10, 0.30, 0.72)
-            pan[edge] = (0.85, 0.10, 0.10)
-        panels.append((pan[sl], f"{yy}" + (" (this year)" if k == 0 else "")))
+        panels.append((pan[sl], f"{yy}" + (" (this year)" if k == 0 else ""), k != 0))
     fig, axes = plt.subplots(1, 4, figsize=(4 * PANEL / 100, PANEL / 100 + 0.35), dpi=100)
-    for ax, (img, t) in zip(axes, panels, strict=True):
+    outline = piece[sl].astype(float)
+    for ax, (img, t, draw) in zip(axes, panels, strict=True):
         ax.imshow(img, interpolation="nearest")
+        if draw and outline.any():
+            # a thin line at screen resolution: the pixels under it stay visible
+            ax.contour(outline, levels=[0.5], colors="red", linewidths=1.0)
         ax.set_title(t, fontsize=8)
         ax.set_axis_off()
     fig.subplots_adjust(0.005, 0.005, 0.995, 0.9, 0.02, 0)
