@@ -57,6 +57,7 @@ EIGHT = np.ones((3, 3), bool)
 MIN_PIECE_W2 = 0.5  # smallest piece considered (W²); smaller ones are noise
 CORRIDOR_CAP = 1.0  # corridor half-width cap, × the main channel's typical half-width
 CORRIDOR_MARGIN_W = 0.25
+GAP_COST = 50.0  # cost per pixel of crossing non-channel ground (bridges mask gaps)
 
 FEATURES = (
     "area_w2",
@@ -82,8 +83,13 @@ FEATURES = (
 
 
 def edge_terminals(channel: np.ndarray, inside: np.ndarray, W: float) -> np.ndarray:
-    """Zones where the channel crosses the reach polygon's edge (labelled)."""
-    edge = inside & ndi.binary_dilation(~inside, EIGHT, iterations=2)
+    """Zones where the channel crosses the reach polygon's edge (labelled).
+
+    The raster border counts as an edge too (a channel running off the grid
+    leaves the reach there).
+    """
+    outside = np.pad(~inside, 1, constant_values=True)
+    edge = inside & ndi.binary_dilation(outside, EIGHT, iterations=2)[1:-1, 1:-1]
     zone = edge & ndi.binary_dilation(channel, EIGHT, iterations=1)
     lab, _ = ndi.label(ndi.binary_dilation(zone, EIGHT, iterations=max(1, int(W // 2))))
     return np.where(zone, lab, 0).astype(np.int32)
@@ -100,9 +106,13 @@ def main_corridor(
     lowest one half-width from the bank (``1 + 4·|d − h| / h``, cheaper on
     the core): it follows the river's normal-width channel and does not
     detour through lobes or blobs fused to the bank, where pixels sit much
-    farther from any edge. The corridor is every channel pixel within
-    ``h + 0.25 W`` of that path. Without two crossing zones (gaps), the
-    largest piece's skeleton stands in for the path.
+    farther from any edge. Non-channel ground inside the reach costs
+    ``GAP_COST`` per pixel, so the path bridges short gaps in the mask (a
+    cloud, a narrow reach below the resolution) rather than leaving the far
+    side of the gap as a "piece", but does not cut across meander necks.
+    The corridor is every channel pixel within ``h + 0.25 W`` of that path.
+    Without two crossing zones, the largest component's skeleton stands in
+    for the path.
     """
     from skimage.graph import MCP_Geometric
     from skimage.morphology import skeletonize
@@ -120,7 +130,7 @@ def main_corridor(
         cost = 1.0 + 4.0 * np.abs(dt - h) / h
         if core is not None:
             cost = cost * np.where(core, 0.75, 1.0)
-        cost = np.where(channel, cost, np.inf)
+        cost = np.where(channel, cost, np.where(inside, GAP_COST, np.inf))
         mcp = MCP_Geometric(cost, fully_connected=True)
         cum, _ = mcp.find_costs(np.argwhere(term == zones[0]))
         for z in zones[1:]:

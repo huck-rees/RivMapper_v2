@@ -39,6 +39,17 @@ def test_pieces_split_corridor_from_lobe_and_loop():
         assert lab[int(r["row"]), int(r["col"])] == pid
 
 
+def test_corridor_bridges_gaps_and_raster_edge():
+    W = 4.0
+    ch = np.zeros((60, 200), bool)
+    ch[28:32, 0:90] = True  # runs off the raster's left edge
+    ch[28:32, 93:200] = True  # a 3-px gap (cloud), then off the right edge
+    inside = np.ones_like(ch)  # the reach covers the whole grid
+    lab, cor, tab = units.pieces(ch, inside, W)
+    assert cor[30, 20] and cor[30, 150]  # both sides are main channel
+    assert not lab.any()
+
+
 def _truth_labels(river, r, synth):
     """Label every piece from the synthetic truth: channel if mostly true channel."""
     from rivmapper_v2.process import clean
