@@ -95,6 +95,46 @@ def edge_terminals(channel: np.ndarray, inside: np.ndarray, W: float) -> np.ndar
     return np.where(zone, lab, 0).astype(np.int32)
 
 
+def extent_terminals(
+    channel: np.ndarray, inside: np.ndarray, W: float, term: np.ndarray
+) -> np.ndarray:
+    """``term`` plus the two ends of the channel along the reach's long axis.
+
+    Where the mask stops short of the reach edge (a narrow upper river below
+    the resolution, cloud at the end of the reach), the edge zones alone
+    leave the end of the main channel outside the main path. The channel
+    pixels (in components of at least ``MIN_PIECE_W2`` W²) furthest up and
+    down the principal axis of the reach footprint are added as terminal
+    zones when no edge zone lies within 2 W of them.
+    """
+    rr, cc = np.nonzero(inside)
+    if len(rr) < 3:
+        return term
+    xy = np.column_stack([rr, cc]).astype(float)
+    mu = xy.mean(axis=0)
+    _, _, vt = np.linalg.svd(xy[:: max(1, len(xy) // 20000)] - mu, full_matrices=False)
+    lab, n = ndi.label(channel, EIGHT)
+    if not n:
+        return term
+    size = np.bincount(lab.ravel())
+    ok = size >= MIN_PIECE_W2 * W * W
+    ok[0] = False
+    r, c = np.nonzero(ok[lab])
+    if not len(r):
+        return term
+    proj = (np.column_stack([r, c]) - mu) @ vt[0]
+    out = term.copy()
+    d_term = ndi.distance_transform_edt(term == 0) if term.any() else None
+    nxt = int(term.max()) + 1
+    for sel in (proj <= proj.min() + 0.5 * W, proj >= proj.max() - 0.5 * W):
+        rs, cs = r[sel], c[sel]
+        if d_term is not None and d_term[rs, cs].min() <= 2 * W:
+            continue
+        out[rs, cs] = nxt
+        nxt += 1
+    return out
+
+
 def main_corridor(
     channel: np.ndarray, inside: np.ndarray, W: float, core: np.ndarray | None = None
 ) -> tuple[np.ndarray, float]:
@@ -102,7 +142,8 @@ def main_corridor(
 
     The typical half-width ``h`` is the median distance-to-bank along the
     channel's skeleton. The main path is the least-cost pixel route between
-    the points where the channel crosses the reach edge, with a cost that is
+    the points where the channel crosses the reach edge (and the two ends of
+    the channel along the reach, see ``extent_terminals``), with a cost that is
     lowest one half-width from the bank (``1 + 4·|d − h| / h``, cheaper on
     the core): it follows the river's normal-width channel and does not
     detour through lobes or blobs fused to the bank, where pixels sit much
@@ -123,7 +164,7 @@ def main_corridor(
     sk_all = skeletonize(channel)
     h = float(np.median(dt[sk_all])) if sk_all.any() else W / 2
     h = max(h, 0.5)
-    term = edge_terminals(channel, inside, W)
+    term = extent_terminals(channel, inside, W, edge_terminals(channel, inside, W))
     zones = [z for z in np.unique(term) if z]
     path = np.zeros_like(channel)
     if len(zones) >= 2:

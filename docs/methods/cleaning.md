@@ -19,6 +19,9 @@ Each processed reach-year mask is split into
   short gaps in the mask (cloud, a narrow stretch below 30 m) instead of
   leaving the main channel beyond a gap as a removable piece, without
   cutting across meander necks. The raster border counts as a reach edge.
+  Where the mask stops short of the reach edge (a narrow upper river, cloud),
+  the two ends of the channel along the reach's long axis are route ends too,
+  so the whole main channel is in the corridor.
   It is never removed, so cleaning cannot break the river.
 - **pieces**: connected groups of the remaining channel pixels of at least
   0.5 W². One contact with the corridor: a bank lobe, dead-end arm or bar

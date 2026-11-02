@@ -50,6 +50,17 @@ def test_corridor_bridges_gaps_and_raster_edge():
     assert not lab.any()
 
 
+def test_corridor_reaches_channel_ends_short_of_edge():
+    W = 4.0
+    ch = np.zeros((60, 300), bool)
+    ch[28:32, 40:140] = True  # stops 40 px short of the left edge (cloud, too narrow)
+    ch[28:32, 150:300] = True  # a 10-px gap, then off the right edge
+    inside = np.ones_like(ch)
+    lab, cor, tab = units.pieces(ch, inside, W)
+    assert cor[30, 45] and cor[30, 200]
+    assert not lab.any()
+
+
 def _truth_labels(river, r, synth):
     """Label every piece from the synthetic truth: channel if mostly true channel."""
     from rivmapper_v2.process import clean
