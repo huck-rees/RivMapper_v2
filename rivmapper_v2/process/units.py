@@ -57,7 +57,7 @@ EIGHT = np.ones((3, 3), bool)
 MIN_PIECE_W2 = 0.5  # smallest piece considered (W²); smaller ones are noise
 CORRIDOR_CAP = 1.0  # corridor half-width cap, × the main channel's typical half-width
 CORRIDOR_MARGIN_W = 0.25
-GAP_COST = 50.0  # cost per pixel of crossing non-channel ground (bridges mask gaps)
+GAP_COST = 1.0e4  # per pixel of non-channel ground: crossed only where the channel is broken
 
 FEATURES = (
     "area_w2",
@@ -148,9 +148,11 @@ def main_corridor(
     the core): it follows the river's normal-width channel and does not
     detour through lobes or blobs fused to the bank, where pixels sit much
     farther from any edge. Non-channel ground inside the reach costs
-    ``GAP_COST`` per pixel, so the path bridges short gaps in the mask (a
-    cloud, a narrow reach below the resolution) rather than leaving the far
-    side of the gap as a "piece", but does not cut across meander necks.
+    ``GAP_COST`` per pixel, far more than any route along the channel: the
+    path follows connected channel wherever it exists and crosses ground
+    only where the mask is broken (a cloud, a narrow reach below the
+    resolution), by the fewest ground pixels, so the far side of a gap is
+    not left as a "piece" and the path never cuts across a meander neck.
     The corridor is every channel pixel within ``h + 0.25 W`` of that path.
     Without two crossing zones, the largest component's skeleton stands in
     for the path.

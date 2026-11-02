@@ -61,6 +61,19 @@ def test_corridor_reaches_channel_ends_short_of_edge():
     assert not lab.any()
 
 
+def test_corridor_does_not_shortcut_a_meander_neck():
+    W = 4.0
+    ch = np.zeros((120, 200), bool)
+    ch[28:32, 0:90] = True  # in from the left ...
+    ch[28:100, 86:90] = True  # ... round a long loop ...
+    ch[96:100, 86:120] = True
+    ch[28:100, 116:120] = True
+    ch[28:32, 116:200] = True  # ... and out to the right; the neck (90-116) is 26 px of ground
+    lab, cor, tab = units.pieces(ch, np.ones_like(ch), W)
+    assert cor[98, 100]  # the loop is main channel, not a piece
+    assert not lab.any()
+
+
 def _truth_labels(river, r, synth):
     """Label every piece from the synthetic truth: channel if mostly true channel."""
     from rivmapper_v2.process import clean

@@ -15,10 +15,11 @@ Each processed reach-year mask is split into
   `h` from the bank (cost `1 + 4·|d − h| / h`, cheaper on the low-flow core),
   and every channel pixel within `h + 0.25 W` of it. It follows the river's
   normal-width channel and does not detour through lobes fused to the bank.
-  Ground between channel pixels costs 50 per pixel, so the route bridges
-  short gaps in the mask (cloud, a narrow stretch below 30 m) instead of
-  leaving the main channel beyond a gap as a removable piece, without
-  cutting across meander necks. The raster border counts as a reach edge.
+  Ground costs 10,000 per pixel: the route stays on connected channel
+  wherever it exists and crosses ground only where the mask is broken
+  (cloud, a narrow stretch below 30 m), by the fewest ground pixels. So the
+  main channel beyond a gap is not left as a removable piece, and the route
+  never shortcuts a meander neck. The raster border counts as a reach edge.
   Where the mask stops short of the reach edge (a narrow upper river, cloud),
   the two ends of the channel along the reach's long axis are route ends too,
   so the whole main channel is in the corridor.
