@@ -180,6 +180,17 @@ def test_label_bundle(tmp_path):
     assert {"ds_order", "year", "row", "col", "piece"} <= set(items.columns)
 
 
+def test_gif_command(tmp_path):
+    from rivmapper_v2.cli import main
+
+    synth = make_river(["flood"], shape=(80, 120), width_px=6, seed=6)
+    project = Project.load(synth.write_project(tmp_path))
+    run_pipeline(project, steps=["process_masks"])
+    assert main(["gif", str(project.config_path)]) == 0
+    gifs = project.river("Synth").paths.river_dir / "gifs"
+    assert any(gifs.glob("*.gif")) and (gifs / "index.html").exists()
+
+
 def test_default_run_skips_export_rgb():
     from rivmapper_v2.pipeline import EXPLICIT_STEPS, STEPS
 

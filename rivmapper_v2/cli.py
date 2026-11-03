@@ -125,6 +125,18 @@ def cmd_label(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_gif(args: argparse.Namespace) -> int:
+    from .config import Project
+    from .viz import make_gifs
+
+    project = Project.load(args.config)
+    reaches = [int(x) for x in _split(args.reaches)] if args.reaches else None
+    for r in project.select(_split(args.rivers)):
+        index = make_gifs(r, reaches)
+        print(f"{r.name}: open {index}")
+    return 0
+
+
 def cmd_ml(args: argparse.Namespace) -> int:
     import pandas as pd
 
@@ -334,6 +346,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--n", type=int, default=300, help="pieces to sample per river")
     p.add_argument("--seed", type=int, default=0)
     p.set_defaults(func=cmd_label)
+
+    p = sub.add_parser("gif", help="timelapse GIFs of the masks, one per reach")
+    p.add_argument("config", help="path to rivmapper.yaml")
+    p.add_argument("--rivers", help="comma-separated river names (default: all)")
+    p.add_argument("--reaches", help="comma-separated reach numbers (default: all)")
+    p.set_defaults(func=cmd_gif)
 
     p = sub.add_parser("ml", help="train the piece classifier on labels")
     p.add_argument("action", choices=["train"])
