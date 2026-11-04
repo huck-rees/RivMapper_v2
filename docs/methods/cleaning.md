@@ -23,6 +23,16 @@ Each processed reach-year mask is split into
   Where the mask stops short of the reach edge (a narrow upper river, cloud),
   the two ends of the channel along the reach's long axis are route ends too,
   so the whole main channel is in the corridor.
+  The corridor is then smoothed: ragged bank-side fringe (protrusions
+  narrower than about 0.7 W that reach more than 0.25 W beyond the smoothed
+  channel; opening radius 0.35 W) is left out of it and becomes a candidate
+  piece or tiny bit instead of being kept unconditionally. Pixels within
+  half a half-width of the route always stay, so the corridor stays
+  connected. On Ok Tedi reach 15 this cut the share of one- or two-year
+  bank-side water inside the corridor from 37% to 12% and moved 1% of
+  channel that is present in 10 or more years out of it (to be judged as a
+  piece; persistence keeps it). On the Bermejo, whose corridor is a single
+  narrow thread, it changes nothing.
   It is never removed, so cleaning cannot break the river.
 - **pieces**: connected groups of the remaining channel pixels of at least
   0.5 W². One contact with the corridor: a bank lobe, dead-end arm or bar
@@ -83,14 +93,35 @@ label counts and cross-validated metrics (also written as JSON beside it).
 
 ## Cleaning
 
-With `process.clean_model` set, `clean_masks` predicts P(channel) for every
-piece, removes pieces below `process.clean_threshold` (0.5) and writes
-`masks/cleaned/` (same four bands as `processed/`; `core` restricted to the
-cleaned channel). The piece tables gain `p_channel` and `removed`; the QA
-table gains `channel_km2_cleaned` and `pieces_removed`. `processed/` is
-left untouched for comparison. Without a model the step only writes the
-piece tables (labelling mode).
+With `process.clean_model` set, `clean_masks`, for every reach-year:
+
+1. predicts P(channel) for every piece and removes pieces below
+   `process.clean_threshold` (0.5);
+2. removes **tiny bits** (channel off the corridor in groups under 0.5 W²,
+   too small to be pieces) unless at least half of the bit was channel the
+   year before or after; a reach-year without either neighbour keeps them;
+3. **reconnects** a main channel broken into segments: the route between
+   segments is traced through ground with evidence of water (wet in at least
+   one look that year, DSWE classes 1–3, or channel in the year before or
+   after) at 100 per pixel (10,000 without evidence; connected channel costs
+   1–5 per pixel, so the route never shortcuts a meander neck), and the gap
+   stretches are filled out to the typical half-width on evidence pixels
+   only.
+
+It writes `masks/cleaned/`: the four bands of `processed/` (`core`
+restricted to the cleaned channel) plus a fifth, `filled` (1 = reconnected
+channel, also set in `channel`), so observed and reconnected channel stay
+distinguishable. The piece tables gain `p_channel` and `removed`; the QA
+table gains `channel_km2_cleaned` (filled pixels included),
+`channel_km2_filled`, `pieces_removed`, `tiny_removed_km2`,
+`n_obs_median` (median clear Landsat looks over the reach, from the raw
+counts) and `low_looks` (fewer than 8). Low-look years are where the
+main channel breaks up (Bermejo reaches 1 and 3 in 1991 and 1994: 3–6 clear
+looks, so a pixel wet in 1–2 of them reads as an uncertain wet share);
+reconnecting filled 2.3 and 2.5 km² there. `processed/` is left untouched
+for comparison. Without a model the step only writes the piece tables
+(labelling mode). `rivmapper gif` shows reconnected pixels in teal.
 
 Synthetic check (`tests/test_clean.py`): with labels taken from the known
-truth, cleaning removes more false-channel than true-channel pixels and
-never adds water.
+truth, cleaning removes more false-channel than true-channel pixels, and
+the only pixels it adds are the reconnected ones in the `filled` band.

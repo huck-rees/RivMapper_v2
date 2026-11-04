@@ -5,8 +5,9 @@
 that shows them all on one page. Each frame is one year, drawn in two
 colours: blue for this year's channel, grey for ground that was channel in
 any earlier year. With cleaned masks (``masks/cleaned/``) the frame shows the
-processed mask (left) next to the cleaned one (right); without them, only the
-processed mask.
+processed mask (left) next to the cleaned one (right), with channel that
+``clean_masks`` reconnected (the ``filled`` band) in teal; without them, only
+the processed mask.
 """
 
 from __future__ import annotations
@@ -26,18 +27,21 @@ log = logging.getLogger(__name__)
 OUTSIDE = (0.93, 0.93, 0.93)
 PREV = (0.80, 0.80, 0.80)
 NOW = (0.10, 0.30, 0.72)
+FILLED = (0.0, 0.70, 0.65)
 FRAME_MS = 450
 LAST_FRAME_MS = 2000
 PANEL_PX = 620
 
 
-def _read(path: Path) -> np.ndarray | None:
+def _read(path: Path, band: int = 1) -> np.ndarray | None:
     import rasterio
 
     if not path.exists():
         return None
     with rasterio.open(path) as s:
-        return s.read(1)
+        if band > s.count:
+            return None
+        return s.read(band)
 
 
 def reach_gif(river: River, o: int, years: list[int], qa: pd.DataFrame, out: Path,
@@ -53,6 +57,7 @@ def reach_gif(river: River, o: int, years: list[int], qa: pd.DataFrame, out: Pat
     kinds = ["processed", "cleaned"] if cleaned else ["processed"]
     path_of = {"processed": p.processed_mask, "cleaned": p.cleaned_mask}
     stacks = {k: {y: _read(path_of[k](o, y)) for y in years} for k in kinds}
+    fills = {y: _read(p.cleaned_mask(o, y), 5) for y in years} if cleaned else {}
     first = next((a for a in stacks["processed"].values() if a is not None), None)
     if first is None:
         raise FileNotFoundError(f"r{o:03d}: no processed masks")
@@ -80,6 +85,9 @@ def reach_gif(river: River, o: int, years: list[int], qa: pd.DataFrame, out: Pat
             if a is not None and status != "no_data" and not (a == 255).all():
                 ch = a == 1
                 rgb[ch] = NOW
+                f = fills.get(y) if k == "cleaned" else None
+                if f is not None:
+                    rgb[f == 1] = FILLED
                 prev[k] = ch if prev[k] is None else prev[k] | ch
             imgs.append(np.rot90(rgb) if rot else rgb)
         ih, iw = imgs[0].shape[:2]
@@ -98,9 +106,12 @@ def reach_gif(river: River, o: int, years: list[int], qa: pd.DataFrame, out: Pat
             ax.set_title(t + (f"   {float(v):.1f} km²" if pd.notna(v) else ""), fontsize=10)
         fig.suptitle(f"{river.name} reach {o}   {y}   {status}", fontsize=12, weight="bold",
                      x=0.01, ha="left", y=0.995)
-        fig.legend(handles=[Patch(color=NOW, label="current channel"),
-                            Patch(color=PREV, label="previously wetted")],
-                   loc="upper right", fontsize=8, ncol=2, frameon=False, bbox_to_anchor=(0.99, 1.0))
+        handles = [Patch(color=NOW, label="current channel"),
+                   Patch(color=PREV, label="previously wetted")]
+        if cleaned:
+            handles.append(Patch(color=FILLED, label="reconnected"))
+        fig.legend(handles=handles, loc="upper right", fontsize=8, ncol=len(handles),
+                   frameon=False, bbox_to_anchor=(0.99, 1.0))
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=100)
         plt.close(fig)

@@ -74,6 +74,46 @@ def test_corridor_does_not_shortcut_a_meander_neck():
     assert not lab.any()
 
 
+def test_reconnect_fills_gap_only_with_evidence():
+    W = 4.0
+    ch = np.zeros((60, 200), bool)
+    ch[28:32, 0:90] = True
+    ch[28:32, 110:200] = True  # a 20-px gap in the main channel
+    inside = np.ones_like(ch)
+    none = units.reconnect(ch, inside, W, np.zeros_like(ch))
+    assert not none.any()  # no evidence of water: the gap stays
+    ev = np.zeros_like(ch)
+    ev[27:33, 85:115] = True  # wet in at least one look across the gap
+    fill = units.reconnect(ch, inside, W, ev)
+    assert fill[30, 100] and not (fill & ch).any() and not (fill & ~ev).any()
+    assert not units.reconnect(ch | fill, inside, W, ev).any()  # unbroken: nothing to add
+
+
+def test_corridor_smoothing_releases_bank_fringe():
+    W = 8.0
+    ch = np.zeros((80, 200), bool)
+    ch[36:44, :] = True  # smooth main channel, 1 W wide
+    ch[30:36, 100:103] = True  # a thin finger of bank-side water (3 px wide, 6 px long)
+    lab, cor, tab = units.pieces(ch, np.ones_like(ch), W)
+    assert cor[40, 50] and cor[40, 101]
+    assert not cor[31, 101]  # the finger tip is no longer protected
+
+
+def test_unsupported_tiny_bits():
+    from rivmapper_v2.process.clean import _unsupported_tiny
+
+    ch = np.zeros((40, 40), bool)
+    ch[5:7, 5:7] = True  # a tiny bit
+    ch[30:32, 30:32] = True  # another
+    cor = np.zeros_like(ch)
+    lab = np.zeros(ch.shape, np.int32)
+    prev = np.zeros_like(ch)
+    prev[30:32, 30:32] = True  # the second was channel last year
+    gone = _unsupported_tiny(ch, cor, lab, [prev])
+    assert gone[5, 5] and not gone[30, 30]
+    assert not _unsupported_tiny(ch, cor, lab, []).any()  # no neighbouring year: keep
+
+
 def _truth_labels(river, r, synth):
     """Label every piece from the synthetic truth: channel if mostly true channel."""
     from rivmapper_v2.process import clean
@@ -142,7 +182,8 @@ def test_clean_masks_end_to_end(tmp_path):
     assert t.iloc[0]["status"] == "ok", t.iloc[0]["message"]
     r = project.river("Synth")
     qa = pd.read_csv(r.paths.process_qa_table)
-    assert {"channel_km2_cleaned", "pieces_removed"} <= set(qa.columns)
+    assert {"channel_km2_cleaned", "pieces_removed", "channel_km2_filled",
+            "tiny_removed_km2", "low_looks"} <= set(qa.columns)
     # cleaning only removes pixels, and removes more false than true channel
     layout = RiverLayout.from_paths(r.paths)
     false_rm = true_rm = 0
@@ -154,7 +195,10 @@ def test_clean_masks_end_to_end(tmp_path):
                 before = s.read(1) == 1
             with rasterio.open(r.paths.cleaned_mask(o, y)) as s:
                 after = s.read(1) == 1
-            assert not (after & ~before).any()
+                assert s.count == 5 and s.descriptions[4].startswith("filled")
+                filled = s.read(5) == 1
+            assert not (after & ~before & ~filled).any()  # only reconnected pixels are new
+            assert not (filled & ~after).any()
             g = layout.grids[o]
             r0, c0 = offset(g, synth.grid)
             truth = synth.truth[ti][r0 : r0 + g.height, c0 : c0 + g.width]

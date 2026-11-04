@@ -61,6 +61,9 @@ MIN_PIECE_W2 = 0.5  # smallest piece considered (W²); smaller ones are noise
 CORRIDOR_CAP = 1.0  # corridor half-width cap, × the main channel's typical half-width
 CORRIDOR_MARGIN_W = 0.25
 GAP_COST = 1.0e4  # per pixel of non-channel ground: crossed only where the channel is broken
+SMOOTH_OPEN_W = 0.35  # corridor smoothing: opening radius (× W); protrusions narrower than ~0.7 W ...
+FRINGE_W = 0.25  # ... reaching more than this (× W) beyond the smoothed corridor become pieces
+EVIDENCE_COST = 100.0  # reconnect: per pixel of ground with evidence of water (see ``reconnect``)
 
 FEATURES = (
     "area_w2",
@@ -159,44 +162,119 @@ def main_corridor(
     only where the mask is broken (a cloud, a narrow reach below the
     resolution), by the fewest ground pixels, so the far side of a gap is
     not left as a "piece" and the path never cuts across a meander neck.
-    The corridor is every channel pixel within ``h + 0.25 W`` of that path.
+    The corridor is every channel pixel within ``h + 0.25 W`` of that path,
+    smoothed: ragged bank-side fringe (protrusions narrower than about
+    ``2·SMOOTH_OPEN_W`` W that reach more than ``FRINGE_W`` W beyond the
+    smoothed channel) is left out of the corridor, so it becomes a candidate
+    piece instead of being kept unconditionally. Pixels within half a
+    half-width of the path always stay, so the corridor stays connected.
     Without two crossing zones, the largest component's skeleton stands in
     for the path.
     """
-    from skimage.graph import MCP_Geometric
-    from skimage.morphology import skeletonize
-
     if not channel.any():
         return np.zeros_like(channel), W
-    dt = ndi.distance_transform_edt(channel)
-    sk_all = skeletonize(channel)
-    h = float(np.median(dt[sk_all])) if sk_all.any() else W / 2
-    h = max(h, 0.5)
-    term = extent_terminals(channel, inside, W, edge_terminals(channel, inside, W))
-    zones = [z for z in np.unique(term) if z]
-    path = np.zeros_like(channel)
-    if len(zones) >= 2:
-        cost = 1.0 + 4.0 * np.abs(dt - h) / h
-        if core is not None:
-            cost = cost * np.where(core, 0.75, 1.0)
-        cost = np.where(channel, cost, np.where(inside, GAP_COST, np.inf))
-        mcp = MCP_Geometric(cost, fully_connected=True)
-        cum, _ = mcp.find_costs(np.argwhere(term == zones[0]))
-        for z in zones[1:]:
-            pts = np.argwhere(term == z)
-            k = int(np.argmin(cum[pts[:, 0], pts[:, 1]]))
-            if np.isfinite(cum[pts[k, 0], pts[k, 1]]):
-                tb = np.array(mcp.traceback(tuple(pts[k])))
-                path[tb[:, 0], tb[:, 1]] = True
-    if not path.any():
-        lab, _ = ndi.label(channel, EIGHT)
-        big = np.argmax(np.bincount(lab.ravel())[1:]) + 1
-        path = skeletonize(lab == big)
+    path, h = main_path(channel, inside, W, core)
     if not path.any():
         return channel.copy(), 2 * h
     d = ndi.distance_transform_edt(~path)
     corridor = channel & (d <= CORRIDOR_CAP * h + CORRIDOR_MARGIN_W * W)
-    return corridor, 2 * h
+    return smooth_corridor(corridor, d, h, W), 2 * h
+
+
+def smooth_corridor(corridor: np.ndarray, d_path: np.ndarray, h: float, W: float) -> np.ndarray:
+    """Drop ragged fringe from the corridor (see ``main_corridor``)."""
+    from skimage.morphology import disk
+
+    r = max(1, int(round(SMOOTH_OPEN_W * W)))
+    opened = ndi.binary_opening(corridor, structure=disk(r))
+    smooth = opened | (corridor & (d_path <= 0.5 * h))
+    if not smooth.any():
+        return corridor
+    return corridor & (ndi.distance_transform_edt(~smooth) <= max(FRINGE_W * W, 1.0))
+
+
+def _typical_half_width(channel: np.ndarray, dt: np.ndarray, W: float) -> float:
+    from skimage.morphology import skeletonize
+
+    sk_all = skeletonize(channel)
+    h = float(np.median(dt[sk_all])) if sk_all.any() else W / 2
+    return max(h, 0.5)
+
+
+def _trace(cost: np.ndarray, term: np.ndarray) -> np.ndarray:
+    """Least-cost path from the first terminal zone to every other one."""
+    from skimage.graph import MCP_Geometric
+
+    zones = [z for z in np.unique(term) if z]
+    path = np.zeros(term.shape, bool)
+    if len(zones) < 2:
+        return path
+    mcp = MCP_Geometric(cost, fully_connected=True)
+    cum, _ = mcp.find_costs(np.argwhere(term == zones[0]))
+    for z in zones[1:]:
+        pts = np.argwhere(term == z)
+        k = int(np.argmin(cum[pts[:, 0], pts[:, 1]]))
+        if np.isfinite(cum[pts[k, 0], pts[k, 1]]):
+            tb = np.array(mcp.traceback(tuple(pts[k])))
+            path[tb[:, 0], tb[:, 1]] = True
+    return path
+
+
+def main_path(
+    channel: np.ndarray, inside: np.ndarray, W: float, core: np.ndarray | None = None
+) -> tuple[np.ndarray, float]:
+    """The main path (see ``main_corridor``) and the typical half-width ``h`` (px)."""
+    from skimage.morphology import skeletonize
+
+    if not channel.any():
+        return np.zeros_like(channel), W / 2
+    dt = ndi.distance_transform_edt(channel)
+    h = _typical_half_width(channel, dt, W)
+    term = extent_terminals(channel, inside, W, edge_terminals(channel, inside, W))
+    cost = 1.0 + 4.0 * np.abs(dt - h) / h
+    if core is not None:
+        cost = cost * np.where(core, 0.75, 1.0)
+    cost = np.where(channel, cost, np.where(inside, GAP_COST, np.inf))
+    path = _trace(cost, term)
+    if not path.any():
+        lab, _ = ndi.label(channel, EIGHT)
+        big = np.argmax(np.bincount(lab.ravel())[1:]) + 1
+        path = skeletonize(lab == big)
+    return path, h
+
+
+def reconnect(
+    channel: np.ndarray, inside: np.ndarray, W: float, evidence: np.ndarray
+) -> np.ndarray:
+    """Pixels that rejoin a main channel broken into segments.
+
+    Where the mask has gaps in the main channel (too few clear looks in a
+    year, a narrow wetted thread below the resolution), the route between
+    the segments is traced through ground with ``evidence`` of water (wet
+    in at least one look that year, or channel in the year before or after)
+    at ``EVIDENCE_COST`` per pixel, ``GAP_COST`` without evidence. Connected
+    channel costs 1–5 per pixel, so the route never shortcuts a meander
+    neck. The gap stretches of the route are filled out to the typical
+    half-width, on evidence pixels only. Returns the new pixels (not already
+    channel); empty when the main channel is unbroken.
+    """
+    out = np.zeros_like(channel)
+    if not channel.any():
+        return out
+    lab, n = ndi.label(channel, EIGHT)
+    if n < 2 or (np.bincount(lab.ravel())[1:] >= MIN_PIECE_W2 * W * W).sum() < 2:
+        return out
+    dt = ndi.distance_transform_edt(channel)
+    h = _typical_half_width(channel, dt, W)
+    term = extent_terminals(channel, inside, W, edge_terminals(channel, inside, W))
+    cost = 1.0 + 4.0 * np.abs(dt - h) / h
+    ground = np.where(evidence, EVIDENCE_COST, GAP_COST)
+    cost = np.where(channel, cost, np.where(inside, ground, np.inf))
+    gap = _trace(cost, term) & ~channel
+    if not gap.any():
+        return out
+    near = ndi.distance_transform_edt(~gap) <= h
+    return near & evidence & ~channel & inside
 
 
 def _perimeter(mask: np.ndarray) -> float:

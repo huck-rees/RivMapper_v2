@@ -539,11 +539,12 @@ def _write_mask(path, grid, bands: dict, tags: dict) -> None:
     from rasterio.transform import from_origin
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    names = list(OUT_BANDS) + [b for b in bands if b not in OUT_BANDS]
     profile = {
         "driver": "GTiff",
         "width": grid.width,
         "height": grid.height,
-        "count": len(OUT_BANDS),
+        "count": len(names),
         "dtype": "uint8",
         "crs": grid.crs,
         "transform": from_origin(grid.x0, grid.y0, grid.res, grid.res),
@@ -558,10 +559,11 @@ def _write_mask(path, grid, bands: dict, tags: dict) -> None:
         "core": "low-flow core channel (0/1)",
         "p_envelope": "P(channel) + P(margin) x 100",
         "p_core": "P(channel) x 100",
+        "filled": "reconnected channel added by clean_masks (0/1)",
     }
     tmp = path.with_suffix(".part.tif")
     with rasterio.open(tmp, "w", **profile) as dst:
-        for i, b in enumerate(OUT_BANDS, start=1):
+        for i, b in enumerate(names, start=1):
             dst.write(bands[b], i)
             dst.set_band_description(i, f"{b}: {desc[b]}")
         dst.update_tags(
