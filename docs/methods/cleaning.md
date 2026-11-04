@@ -35,7 +35,11 @@ raggedness, contacts with the corridor, share of its edge on the corridor,
 farthest distance from the corridor, share on the low-flow core, mean
 probabilities, persistence (share of the piece that was channel 1 and 2
 years before and after), its pixels' channel frequency over the whole
-record, and its share of the reach-year's channel. Context: stage
+record, its share of the reach-year's channel, and its main-channel history:
+the share of the piece that was in the main corridor in any earlier year
+(`former_main`) and in the previous 5 years (`recent_main`). An oxbow is
+former main channel now off the main path, which the shape and persistence
+features alone did not separate from an active side channel. Context: stage
 percentile, braided reach, sparse/inferred year. The channel width in
 pixels is left out on purpose: on the Ok Tedi it acted as a proxy for
 position along the river (alone it scored AUC 0.89, because the wide lowland
@@ -57,9 +61,17 @@ after. Keys 1 / 2 / 3: channel / not channel / unsure. Labels are exported
 as `{river}_labels.csv` with a pixel inside each piece, so they still match
 if the piece code changes.
 
-Channel = part of the active river, including side channels and cut-off
-loops still open at both ends (the same rule as the network selection).
-Not channel = floodplain or flood water, lakes, artefacts.
+Channel = wetted, active river: the main channel and side channels or braid
+threads carrying flow. Not channel = floodplain or flood water, lakes,
+abandoned or partly abandoned oxbows (even where still joined to the river),
+dry bars, artefacts. Pieces that are half one, half the other: unsure.
+
+**Review rounds.** `rivmapper label rivmapper.yaml --review --n 150`
+samples only pieces the current model keeps (at least 2 W², not yet
+labelled) into `labels/review/`, exported as `{river}_labels_review.csv`.
+Random sampling rarely shows the model's costly keep mistakes (an oxbow
+kept as channel); a review round targets them. Training reads every
+`{river}_labels*.csv` in `labels/`.
 
 ## Model (`rivmapper ml train`)
 

@@ -163,6 +163,19 @@ def test_clean_masks_end_to_end(tmp_path):
             true_rm += int((gone & truth).sum())
     assert false_rm > true_rm
 
+    # a review round samples only kept pieces and exports a separate label file
+    from rivmapper_v2.process import label
+
+    try:
+        index = label.build(r, n=10, review=True)
+    except ValueError:  # nothing kept that is big enough on this tiny river
+        return
+    html = index.read_text()
+    assert index.parent.name == "review" and "Synth_labels_review.csv" in html
+    items = pd.read_csv(index.parent / "items.csv")
+    if len(items):
+        assert (items["area_w2"] >= label.REVIEW_MIN_W2).all()
+
 
 def test_label_bundle(tmp_path):
     from rivmapper_v2.process import label

@@ -75,16 +75,22 @@ def reach_pieces(
     freq = np.mean([a[0] == 1 for a in obs], axis=0)
     ctx = qa.set_index(["ds_order", "year"]) if qa is not None and len(qa) else None
     rows, labs = [], {}
-    for y in years:
+    ever_main = np.zeros(inside.shape, bool)
+    recent: list[tuple[int, np.ndarray]] = []
+    for y in sorted(years):
         a = stack[y]
         if a is None:
             continue
+        recent = [(yy, c) for yy, c in recent if y - yy <= units.RECENT_YEARS]
+        recent_main = np.zeros(inside.shape, bool)
+        for _, c in recent:
+            recent_main |= c
         ch = a[0] == 1
         others = {}
         for k in (-2, -1, 1, 2):
             b = stack.get(y + k)
             others[k] = (b[0] == 1) if b is not None else None
-        lab, _, tab = units.pieces(
+        lab, cor, tab = units.pieces(
             ch,
             inside,
             w_px,
@@ -93,7 +99,11 @@ def reach_pieces(
             p_core=a[3] / 100.0,
             others=others,
             freq_all=freq,
+            was_main=ever_main.copy(),
+            recent_main=recent_main,
         )
+        ever_main |= cor
+        recent.append((y, cor))
         labs[y] = lab
         if tab.empty:
             continue

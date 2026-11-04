@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 LABELS = {"channel": 1, "not_channel": 0}
 CONTEXT_FEATURES = ("q_scene_pctile", "braided", "sparse_or_inferred")
 FEATURES = tuple(units.FEATURES) + CONTEXT_FEATURES
-MODEL_VERSION = 2
+MODEL_VERSION = 3
 MISSING = -1.0
 
 

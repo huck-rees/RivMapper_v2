@@ -36,6 +36,9 @@ p_env_mean, p_core_mean   mean probabilities (0–1)
 prev1, next1         share of the piece that was channel 1 year before / after
 prev2, next2         ... 2 years before / after
 freq_all             mean channel frequency of its pixels over all years
+former_main          share of the piece that was main corridor in any earlier year
+recent_main          ... in one of the previous ``RECENT_YEARS`` years (an
+                     oxbow: former main channel, now off the main path)
 area_rel_reach       area / the reach-year's total channel area
 ===================  ===================================================
 
@@ -79,7 +82,10 @@ FEATURES = (
     "next2",
     "freq_all",
     "area_rel_reach",
+    "former_main",
+    "recent_main",
 )
+RECENT_YEARS = 5
 
 
 def edge_terminals(channel: np.ndarray, inside: np.ndarray, W: float) -> np.ndarray:
@@ -212,6 +218,8 @@ def pieces(
     p_core: np.ndarray | None = None,
     others: dict[int, np.ndarray | None] | None = None,
     freq_all: np.ndarray | None = None,
+    was_main: np.ndarray | None = None,
+    recent_main: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
     """Split one reach-year mask into the main corridor and pieces.
 
@@ -222,6 +230,8 @@ def pieces(
         others: {offset: channel mask} for neighbouring years (−2, −1, 1, 2);
             None where the year has no data.
         freq_all: per-pixel share of observed years that were channel.
+        was_main, recent_main: pixels that were in the main corridor in any
+            earlier year / in the previous ``RECENT_YEARS`` years.
 
     Returns:
         (piece_id int32 array, 0 = not a piece; corridor mask; feature table
@@ -296,6 +306,8 @@ def pieces(
                 "next2": persist(2),
                 "freq_all": share(freq_all),
                 "area_rel_reach": area / total,
+                "former_main": share(was_main),
+                "recent_main": share(recent_main),
                 # a pixel inside the piece (its widest point): labels refer to
                 # pieces by this pixel, so they survive renumbering
                 "row": int(np.unravel_index(np.argmax(dt), dt.shape)[0] + r0),

@@ -119,7 +119,7 @@ def cmd_label(args: argparse.Namespace) -> int:
 
     project = Project.load(args.config)
     for r in project.select(_split(args.rivers)):
-        index = label.build(r, n=args.n, seed=args.seed)
+        index = label.build(r, n=args.n, seed=args.seed, review=args.review)
         print(f"{r.name}: open {index}")
         print(f"  then save the exported CSV in {r.paths.labels_dir}")
     return 0
@@ -148,11 +148,12 @@ def cmd_ml(args: argparse.Namespace) -> int:
     for cfg in args.configs:
         project = Project.load(cfg)
         for r in project.rivers:
-            f = r.paths.labels_dir / f"{r.name}_labels.csv"
-            if not f.exists():
-                print(f"{r.name}: no labels at {f}; skipped")
+            from .process.label import existing_labels
+
+            labels = existing_labels(r)
+            if labels is None:
+                print(f"{r.name}: no {r.name}_labels*.csv in {r.paths.labels_dir}; skipped")
                 continue
-            labels = pd.read_csv(f)
             qa = pd.read_csv(r.paths.process_qa_table, keep_default_na=False, na_values=[""])
             years = sorted(qa["year"].unique().tolist())
             layout = RiverLayout.from_paths(r.paths)
@@ -345,6 +346,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rivers", help="comma-separated river names (default: all)")
     p.add_argument("--n", type=int, default=300, help="pieces to sample per river")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--review", action="store_true",
+                   help="sample pieces the current model keeps (>= 2 W²), not yet labelled")
     p.set_defaults(func=cmd_label)
 
     p = sub.add_parser("gif", help="timelapse GIFs of the masks, one per reach")

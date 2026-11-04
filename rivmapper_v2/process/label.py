@@ -203,8 +203,47 @@ show();
 """
 
 
-def build(river: River, n: int = 300, seed: int = 0, bundle: str = "bundle") -> Path:
-    """Write the labelling bundle; returns the path of index.html."""
+REVIEW_MIN_W2 = 2.0  # review rounds: only pieces at least this big (W²)
+
+
+def review_pool(pieces: pd.DataFrame, labelled: pd.DataFrame | None) -> pd.DataFrame:
+    """Pieces the current model keeps, at least ``REVIEW_MIN_W2`` W², not yet labelled.
+
+    A review round puts the model's keep decisions in front of a person: the
+    mistakes that matter most (an oxbow or floodplain lake kept as channel)
+    are among them, and a random sample of all pieces rarely shows them.
+    """
+    if "removed" not in pieces.columns:
+        raise ValueError("no model predictions in the piece tables — set process.clean_model "
+                         "and run clean_masks before a review round")
+    kept = ~pieces["removed"].astype(str).str.lower().isin(["true", "1"])
+    d = pieces[kept & (pieces["area_w2"] >= REVIEW_MIN_W2)]
+    if labelled is not None and len(labelled):
+        key = set(zip(labelled.ds_order, labelled.year, labelled.row, labelled.col))
+        d = d[[k not in key for k in zip(d.ds_order, d.year, d.row, d.col)]]
+    return d
+
+
+def existing_labels(river: River) -> pd.DataFrame | None:
+    """All label files for a river (``{river}_labels*.csv``), one row per piece location."""
+    files = sorted(river.paths.labels_dir.glob(f"{river.name}_labels*.csv"))
+    if not files:
+        return None
+    d = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+    return d.drop_duplicates(["ds_order", "year", "row", "col"], keep="last")
+
+
+def build(river: River, n: int = 300, seed: int = 0, bundle: str = "bundle",
+          review: bool = False) -> Path:
+    """Write the labelling bundle; returns the path of index.html.
+
+    ``review``: sample from the pieces the current model keeps (see
+    ``review_pool``) into ``labels/review/``, exported as
+    ``{river}_labels_review.csv``; training reads every
+    ``{river}_labels*.csv``.
+    """
+    if review and bundle == "bundle":
+        bundle = "review"
     from .windows import RiverLayout
 
     p = river.paths
@@ -221,6 +260,11 @@ def build(river: River, n: int = 300, seed: int = 0, bundle: str = "bundle") -> 
             f"no piece tables in {p.pieces_dir} — run `rivmapper run … --steps clean_masks` first"
         )
     pieces = pd.concat(tables, ignore_index=True)
+    if review:
+        pieces = review_pool(pieces, existing_labels(river))
+        if pieces.empty:
+            raise ValueError(f"{river.name}: no unlabelled kept pieces of at least "
+                             f"{REVIEW_MIN_W2} W² to review")
     chosen = sample(pieces, n, seed)
     sugg = {}
     sfile = p.labels_dir / "suggestions.csv"
@@ -271,7 +315,7 @@ def build(river: River, n: int = 300, seed: int = 0, bundle: str = "bundle") -> 
     page = (PAGE.replace("__ITEMS__", json.dumps(items))
             .replace("__RIVER__", html.escape(river.name))
             .replace("__BUNDLE__", bundle)
-            .replace("__CSVNAME__", f"{river.name}_labels.csv"))
+            .replace("__CSVNAME__", f"{river.name}_labels{'_review' if review else ''}.csv"))
     index = out_dir / "index.html"
     index.write_text(page, encoding="utf-8")
     pd.DataFrame(items).to_csv(out_dir / "items.csv", index=False)
