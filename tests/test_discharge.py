@@ -133,6 +133,27 @@ def test_discharge_step_end_to_end(stage_project, monkeypatch):
     assert again.iloc[0]["status"] == "skipped"
 
 
+def test_discharge_downloads_before_the_scene_manifest_exists(stage_project, monkeypatch):
+    from rivmapper_v2 import discharge
+
+    river = stage_project.river("Synth")
+    river.discharge.source = "geoglows_v2"
+    src = FakeGeoglows(gpd.read_file(river.paths.reach_lines))
+    monkeypatch.setattr(discharge, "Geoglows", lambda: src)
+    p = river.paths
+    manifest = p.scene_manifest.read_bytes()
+    p.scene_manifest.unlink()
+    table = run_pipeline(stage_project, steps=["discharge"])
+    assert table.iloc[0]["status"] == "failed"
+    assert "extract_masks" in table.iloc[0]["message"]
+    assert p.discharge_daily.exists() and p.discharge_join.exists()
+    assert not p.stage_table.exists()
+    p.scene_manifest.write_bytes(manifest)
+    table = run_pipeline(stage_project, steps=["discharge"])
+    assert table.iloc[0]["status"] == "ok", table.iloc[0]["message"]
+    assert p.stage_table.exists()
+
+
 def test_discharge_failure_does_not_block_processing(stage_project, monkeypatch):
     from rivmapper_v2 import discharge
 

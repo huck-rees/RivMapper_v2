@@ -35,9 +35,11 @@ Outputs (``{river}/discharge/``): ``{river}_discharge_join.csv``,
 ``{river}_discharge_daily.csv``, ``{river}_stage.csv``, the run record
 and, for GloFAS, the yearly download cache ``glofas/``.
 
-The step is optional: if it fails (no network, no credentials, no
-manifest), later steps still run and the QA table records no stage
-information.
+The step is optional: if it fails (no network, no credentials), later
+steps still run and the QA table records no stage information. Without a
+scene manifest yet it still joins and downloads (the slow part), writes
+the join and daily tables and stops; run it again after ``extract_masks``
+to write the stage table.
 """
 
 from __future__ import annotations
@@ -486,14 +488,10 @@ def discharge(
     """Run step ``discharge`` for one river."""
     river.require("masks", "year_start", "year_end")
     p = river.paths
-    for need, what in (
-        (p.reach_lines, "the reaches step"),
-        (p.scene_manifest, "extract_masks (raw product v2 writes the scene manifest)"),
-    ):
-        if not need.exists():
-            return StepResult(
-                river.name, STEP, FAILED, f"{need.name} not found — run {what}"
-            )
+    if not p.reach_lines.exists():
+        return StepResult(
+            river.name, STEP, FAILED, f"{p.reach_lines.name} not found — run the reaches step"
+        )
     outputs = [p.discharge_join, p.discharge_daily, p.stage_table]
     params = _parameters(river)
     existing = check_existing(
@@ -510,6 +508,17 @@ def discharge(
     ids = list(dict.fromkeys(join["river_id"].tolist()))
     log.info("  %d reaches joined to %d %s(s)", len(join), len(ids), label)
     daily = source.daily(ids, f"{years[0]}-01-01", f"{years[-1]}-12-31")
+    if not p.scene_manifest.exists():
+        # the download (the slow part; GloFAS keeps a yearly cache) does not
+        # need the scene dates, so it can run while extract_masks does
+        p.discharge_dir.mkdir(parents=True, exist_ok=True)
+        join.to_csv(p.discharge_join, index=False)
+        daily.round(3).to_csv(p.discharge_daily, index_label="date")
+        return StepResult(
+            river.name, STEP, FAILED,
+            f"discharge downloaded ({len(ids)} {label}(s)); stage table needs "
+            f"{p.scene_manifest.name} — run extract_masks, then discharge again (fast)",
+        )
     manifest = pd.read_csv(p.scene_manifest)
     stage = stage_table(
         manifest, join, daily, years, d.low_stage_pctile, d.high_stage_pctile

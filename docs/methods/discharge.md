@@ -47,7 +47,7 @@ RivMapper always sends requests to the EWDS address. The key alone decides who y
 
 ## Workflow
 
-For each river (needs the reach lines and the scene manifest from `extract_masks`, raw product v2):
+For each river (needs the reach lines; the stage statistics also need the scene manifest from `extract_masks`, raw product v2). Without the manifest yet, the step still joins and downloads, the slow part, writes the join and daily tables and stops with a message; run it again after `extract_masks` (the GloFAS cache makes that fast). So the download can run alongside extraction:
 
 ### 1. Join each reach to one model river
 
@@ -100,7 +100,7 @@ From the *kept* scenes in the scene manifest:
 
 `process_masks` joins `q_scene_median`, `q_scene_pctile` and `stage_flag` into its QA table and adds the flag to `flags`. Without this step's outputs, the columns are empty and `flags` says `no_discharge`.
 
-The step is **optional**: if it fails (no network, no EWDS key, no scene manifest), later steps still run.
+The step is **optional**: if it fails (no network, no EWDS key, no scene manifest yet), later steps still run.
 
 ## Outputs (`{river}/discharge/`)
 
