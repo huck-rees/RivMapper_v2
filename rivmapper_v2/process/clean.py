@@ -23,7 +23,10 @@ Runs after ``process_masks``. For every reach:
    channel). The QA table gains ``channel_km2_cleaned`` (filled pixels
    included), ``channel_km2_filled``, ``pieces_removed``,
    ``tiny_removed_km2``, ``n_obs_median`` (median clear looks over the
-   reach, from the raw counts) and ``low_looks`` (fewer than ``LOW_LOOKS``).
+   reach, from the raw counts) and ``low_looks`` (fewer than ``LOW_LOOKS_FRAC``
+   of the river's median over all its reach-years, or fewer than
+   ``LOW_LOOKS_MIN``: relative, because a cloudy river such as the Ok Tedi
+   has few clear looks every year).
    Without a model the step only writes the piece tables (what the
    labelling bundle needs).
 
@@ -50,7 +53,8 @@ log = logging.getLogger(__name__)
 
 STEP = "clean_masks"
 NODATA = 255
-LOW_LOOKS = 8  # median clear looks below this: flagged low_looks in the QA table
+LOW_LOOKS_FRAC = 0.5  # low_looks: median clear looks below this share of the river's typical year ...
+LOW_LOOKS_MIN = 3  # ... or below this many
 TINY_SUPPORT = 0.5  # tiny bit kept if this share was channel the year before or after
 WET_CLASS_BAND = 3  # raw band (0-based) with the count of looks in DSWE classes 1-3
 CONTEXT = ("river", "ds_order", "year", "status", "q_scene_pctile", "braided", "w_px")
@@ -139,6 +143,14 @@ def reach_pieces(
         rows.append(tab)
     table = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
     return table, labs
+
+
+def low_looks(n_obs: pd.Series) -> pd.Series:
+    """Reach-years with few clear looks for this river (see module docstring)."""
+    seen = n_obs[n_obs > 0]
+    typical = float(seen.median()) if len(seen) else np.nan
+    limit = max(LOW_LOOKS_MIN, LOW_LOOKS_FRAC * typical) if np.isfinite(typical) else LOW_LOOKS_MIN
+    return n_obs.notna() & (n_obs < limit)
 
 
 def _unsupported_tiny(ch, corridor, lab, neighbours) -> np.ndarray:
@@ -243,8 +255,7 @@ def clean_masks(river: River) -> StepResult:
             )
             removed_rows.append({"ds_order": o, "year": y, "channel_km2_cleaned": km2,
                                  "channel_km2_filled": km2_fill, "pieces_removed": len(ids),
-                                 "tiny_removed_km2": km2_tiny, "n_obs_median": n_obs,
-                                 "low_looks": bool(np.isfinite(n_obs) and n_obs < LOW_LOOKS)})
+                                 "tiny_removed_km2": km2_tiny, "n_obs_median": n_obs})
         log.info("  reach %d: %d pieces, %d removed", o, len(table),
                  int(table["removed"].sum()) if len(table) else 0)
     if model is None:
@@ -253,6 +264,7 @@ def clean_masks(river: River) -> StepResult:
             f"{n_pieces} candidate pieces written (no clean_model set: labelling mode)",
         )
     rem = pd.DataFrame(removed_rows)
+    rem["low_looks"] = low_looks(rem["n_obs_median"])
     qa = qa.drop(columns=[c for c in rem.columns if c in qa and c not in ("ds_order", "year")])
     qa = qa.merge(rem, on=["ds_order", "year"], how="left")
     qa.to_csv(p.process_qa_table, index=False)

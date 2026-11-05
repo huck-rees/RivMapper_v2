@@ -114,6 +114,15 @@ def test_unsupported_tiny_bits():
     assert not _unsupported_tiny(ch, cor, lab, []).any()  # no neighbouring year: keep
 
 
+def test_low_looks_is_relative_to_the_river():
+    from rivmapper_v2.process.clean import low_looks
+
+    cloudy = pd.Series([5.0, 6, 5, 2, 6, np.nan])  # few looks is normal here
+    assert low_looks(cloudy).tolist() == [False, False, False, True, False, False]
+    clear = pd.Series([20.0, 22, 18, 8, 21])
+    assert low_looks(clear).tolist() == [False, False, False, True, False]
+
+
 def _truth_labels(river, r, synth):
     """Label every piece from the synthetic truth: channel if mostly true channel."""
     from rivmapper_v2.process import clean

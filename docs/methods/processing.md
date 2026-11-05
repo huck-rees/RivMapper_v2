@@ -1,6 +1,6 @@
 # Mask processing (step `process_masks`)
 
-**Status: in development.** Phases 0 (foundations), 1 (core pipeline) and 2 (scene screening at extraction, stage flag from modelled discharge) are built; phase 2 is not yet checked on re-extracted Ok Tedi data. The step writes annual channel masks, a QA table and QA figures. Calibration of the envelope threshold and the channel-belt corridor come in phase 3. The full design and build plan are in the *RivMapper mask processing plan* (shared doc, Oct 2026).
+**Status: working pipeline (Nov 2026).** Phases 0 (foundations), 1 (core pipeline), 2 (scene screening at extraction, stage flag from modelled discharge) and 3's network selection are built and checked on the Ok Tedi–Fly (meandering, 20 reaches) and the Bermejo (braided to meandering, 21 reaches). The step writes annual channel masks (`masks/processed/`), a QA table and QA figures. The learned cleaning step that follows it, `clean_masks` ([cleaning.md](cleaning.md)), writes the final product, `masks/cleaned/`. Still to come: calibration of the envelope threshold against bankfull width (phase 3). The full design and build plan are in the *RivMapper mask processing plan* (shared doc, Oct 2026). A short methods text for manuscripts is at the end of this page.
 
 ## Goal
 
@@ -20,10 +20,12 @@ A low-flow core mask and per-pixel probabilities are written alongside.
 | Windows | Each reach is processed with its upstream and downstream neighbours on the river grid; only the centre reach's result is kept | 0 ✅ |
 | Scene screening | Extraction drops scenes with widespread false water, and writes a scene manifest (raw product v2; [masks.md](masks.md)) | 2 ✅ |
 | Temporal model | Per-pixel hidden Markov model on the counts (dry / high-stage margin / channel) gives a channel probability every year | 1 ✅ |
-| Channel extraction | Seeds (SWORD + last year's channel), width-scaled gap bridging, through-flow connectivity, removal of over-wide and dead-end water | 1 ✅ (corridor: 3) |
+| Channel extraction | Seeds (SWORD + last year's channel), width-scaled gap bridging, through-flow connectivity, removal of over-wide and dead-end water | 1 ✅ |
+| Network selection | Skeleton link graph: main path, channel-like second threads, floodplain water dropped | 3 ✅ |
 | Year check | Reach area against its 5-year running median; outliers rerun or flagged | 1 ✅ |
 | Calibration | Envelope threshold matched to bankfull width | 3 |
 | Stage flag | Modelled discharge (GloFAS reanalysis; GEOGLOWS v2 optional) on scene dates ([discharge.md](discharge.md)) | 2 ✅ |
+| Learned cleaning | Separate step `clean_masks`: classifier trained on human labels removes oxbows, floodplain and bank-side water; tiny unsupported bits removed; broken main channel reconnected ([cleaning.md](cleaning.md)) | ✅ |
 
 ## Reach windows ✅
 
@@ -65,7 +67,7 @@ From the share of a reach's pixels with at least one clear look that year (cover
 | `inferred` | < 0.1, with a year ≥ 0.1 within `max_infer_gap` (2) years on both sides | yes, from the model alone, flagged |
 | `no_data` | anything else (e.g. 1984–86 on the Ok Tedi) | all 255 |
 
-Landsat 7 SLC-off scenes are only used in `le07_gap_years` (phase 2), so 2012 on the Ok Tedi is `inferred` from 2011 and 2013.
+Landsat 7 SLC-off scenes are used only in `le07_gap_years` (default 2012, when no other sensor flew: Landsat 5 ended in November 2011 and Landsat 8 data start in April 2013). 2012 is therefore observed, but with fewer clear looks per pixel than other years (SLC-off stripes) and occasional stripe artefacts; `clean_masks` flags such years `low_looks`.
 
 ## Channel extraction ✅
 
@@ -96,7 +98,7 @@ Landsat 7 SLC-off scenes are only used in `le07_gap_years` (phase 2), so 2012 on
 10. **Clean.** Drop pieces smaller than 4 W²; fill dry holes smaller than 0.25 W² (holes bigger than that are bars and islands, kept).
 11. **Core product** = channel ∩ core.
 
-Anabranches joined to the network at both ends are channel by design, so a newly abandoned course or cut-off loop that is still wet and connected at both ends is mapped until it stops being so (a deliberate choice: it keeps side channels from flickering, at the cost of a gradual rather than a sharp abandonment signal; the links tables record each loop's width, core share and connection by year).
+Anabranches joined to the network at both ends are channel by design, so a newly abandoned course or cut-off loop that is still wet and connected at both ends is mapped until it stops being so (a deliberate choice: it keeps side channels from flickering, at the cost of a gradual rather than a sharp abandonment signal; the links tables record each loop's width, core share and connection by year). Obvious oxbows and partly abandoned loops are removed afterwards by the learned cleaning ([cleaning.md](cleaning.md)), which judges them with their main-channel history and human labels; the rule here stays permissive so that real side channels and braid threads survive to that step.
 
 ## Year check ✅
 
@@ -163,17 +165,26 @@ The oxbow is removed from the first year after the cutoff. The avulsion's new co
 
 27 reach-years are flagged as area outliers. Most are stage, not mapping error: the lower reaches (15–19) are high in 1999–2000 and low in 2015, the El Niño drought year when the Fly was too low for shipping.
 
-Known limits after phase 3's network selection (to revisit with the braided test rivers, Bermejo, before any further tuning):
+Known limits after phase 3's network selection:
 
-- Cut-off loops whose connection to the river is only 1–2 px wide (Ok Tedi reaches 10 and 19) drop out in years when Landsat misses that connection, then return. Bridging along last year's channel across observed-dry pixels would remove this but delay a real closure by a year; deliberately not done until the rules have been tested on braided reaches.
-- The thread, persistence and lattice thresholds were tuned on one meandering river and the synthetic suite only.
+- Cut-off loops whose connection to the river is only 1–2 px wide (Ok Tedi reaches 10 and 19) drop out in years when Landsat misses that connection, then return. Bridging along last year's channel across observed-dry pixels would remove this but delay a real closure by a year; not done. Since Nov 2026 the learned cleaning removes obvious oxbows outright, which takes most of this flicker out of the final masks.
+- The thread, persistence and lattice thresholds were tuned on one meandering river and the synthetic suite, then checked unchanged on the Bermejo (Nov 2026): its braided reaches 1–5 kept their threads, and the remaining errors there (missing stretches in low-look years, bar pixels attached to the main thread) are handled or flagged in `clean_masks`. The settings were deliberately not re-tuned for the Bermejo, to keep one rule set across rivers.
+- SWORD marks only Bermejo reaches 1–3 as braided (`n_chan_mod`); reaches 4–5 are braided on the imagery but are judged with the single-thread limits.
 
 Known limits, for phases 2–3:
 
-- The upper Ok Tedi (reaches 1–4, W = 3.5–3.7 px) never forms one path between its window's terminals, so the fallback (all seeded pieces) applies. Masks are clean (typically 1–4 pieces against 10–30 for the baseline) but not strictly continuous.
+- The upper Ok Tedi (reaches 1–4, W = 3.5–3.7 px) never forms one path between its window's terminals, so the fallback (all seeded pieces) applies. Masks are clean (typically 1–4 pieces against 10–30 for the baseline) but not strictly continuous; `clean_masks` reconnects the main channel where there is evidence of water across the gaps.
 - Floodplain water joined to the channel through a neighbouring reach, or reaching a cut line, survives in some wet years on the lower Ok Tedi (e.g. reach 16 in 2009–2011 and 2017–2019). The channel-belt / HAND corridor (phase 3) targets this; the stage flag (phase 2) will separate stage-driven area changes from mapping errors.
 - A tributary entering at the top of reach 2 is kept in some years (tributary handling: phase 3).
 
 ## Settings
 
 The `process:` section of `rivmapper.yaml` (all overridable per river); see the template written by `rivmapper init`.
+
+## Methods text (draft for manuscripts)
+
+> Annual channel masks were derived from the per-pixel counts of clear and water-classified Landsat observations ([masks.md](masks.md)) in two steps. First, each pixel's yearly counts were treated as noisy evidence about a hidden state (dry, high-stage margin or channel) that rarely changes from year to year; a three-state hidden Markov model fitted per river without labels gave, for every pixel and year, the probability of each state, so that sparse or cloudy years borrow strength from their neighbours. Within each reach (processed with its upstream and downstream neighbours, so that the river can be followed across reach boundaries), the near-bankfull channel was grown from seeds on the SWORD reach lines and on the previous year's channel, gaps were bridged by least-cost paths through pixels with some evidence of water, and only water connected to the river's through-flow network was kept. The channel's skeleton was then split into links, and a main path between the points where the river enters and leaves the reach was kept together with second threads that form loops and have channel-like width, persistence and connectivity; floodplain water, lattices of overbank water, dead ends, ponds and tributaries were removed. All lengths and widths are expressed in units of the reach's channel width W, so the same rules apply to rivers of any size, and every threshold, decision and pixel count is recorded per reach-year.
+>
+> Second, the remaining errors that a person sees at once but simple rules miss (oxbows and partly abandoned loops still joined to the river, floodplain and flood water fused to the bank, and scraggly bank-side water from short wetting events) were removed with a classifier trained on human labels ([cleaning.md](cleaning.md)). Each mask was split into a smoothed main-channel corridor, which is never removed, and candidate pieces, each described by about twenty width-normalised measurements of shape, contact with the main channel, low-flow core share, persistence in the neighbouring years, and history as main channel. Gradient-boosted trees were trained on pieces labelled channel or not channel (the wetted, active river versus everything else) by an analyst viewing true-colour annual composites alongside the masks of the year before, the year and the year after, first on a random stratified sample and then on a targeted review of the pieces the model kept. Pieces with P(channel) below 0.5 were removed, as were tiny groups of water not present in either neighbouring year. Where the main channel was broken into segments, mostly in years with few clear observations, the segments were reconnected along the least-cost route through pixels with evidence of water that year or channel in a neighbouring year; these filled pixels are stored separately so that analyses can include or exclude them.
+>
+> On the Ok Tedi–Fly (20 reaches, 1984–2026) and the Bermejo (21 reaches), cross-validation holding out whole reaches gave about 84% accuracy (AUC 0.91) for the piece classifier, with a cleaning step that removed a median of 1–2% of each reach-year's mapped channel area and reduced the year-to-year variability of channel area (median coefficient of variation per reach 0.094 to 0.072 on the Ok Tedi, 0.116 to 0.101 on the Bermejo) without touching the main channel. Residual errors (occasional flicker of cut-off loops and side channels, bank-side water in flood years, and bar pixels attached to the main thread in braided reaches) are short-lived relative to the multi-year windows over which channel reworking is measured, and are expected to average out in the migration timescale T_CM. A model trained on one river transferred less well to the other (accuracy 0.66–0.79), so each new river is given its own labels (about 150 random and 150 review pieces) before cleaning.

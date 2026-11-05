@@ -2,9 +2,19 @@
 
 The rule-based extraction (`processing.md`) keeps some water that a person
 immediately sees is not river channel: flood water and lakes fused to the
-bank, floodplain water draped along the channel, and cut-off loops that
-flicker in and out with detection. `clean_masks` removes such pieces with a
-classifier trained on human labels.
+bank, floodplain water draped along the channel, scraggly bank-side water
+from short wetting events, and oxbows or partly abandoned loops that are
+still joined to the river. In years with few clear looks it also leaves
+gaps in the main channel. `clean_masks` removes such pieces with a
+classifier trained on human labels, drops tiny bits of water not seen in
+either neighbouring year, and reconnects a broken main channel.
+`masks/cleaned/` is the final channel product; `masks/processed/` is kept
+unchanged for comparison.
+
+Run order for a river: `process_masks` → `export_rgb` (imagery for the
+labelling pages) → `clean_masks` without a model (piece tables) → `label`
+→ `ml train` → set `process.clean_model` → `clean_masks` → `label --review`
+→ `ml train` again → `clean_masks` → `gif` to inspect.
 
 ## Pieces (`process/units.py`)
 
@@ -115,7 +125,11 @@ distinguishable. The piece tables gain `p_channel` and `removed`; the QA
 table gains `channel_km2_cleaned` (filled pixels included),
 `channel_km2_filled`, `pieces_removed`, `tiny_removed_km2`,
 `n_obs_median` (median clear Landsat looks over the reach, from the raw
-counts) and `low_looks` (fewer than 8). Low-look years are where the
+counts) and `low_looks` (below half the river's median `n_obs_median` over
+all its reach-years, or below 3). The rule is relative because rivers differ
+far more than years do: the median reach-year has 4 clear looks per pixel on
+the cloudy Ok Tedi and 11 on the Bermejo; a fixed limit of 8 flagged 721 of
+the Ok Tedi's 800 reach-years. Low-look years are where the
 main channel breaks up (Bermejo reaches 1 and 3 in 1991 and 1994: 3–6 clear
 looks, so a pixel wet in 1–2 of them reads as an uncertain wet share);
 reconnecting filled 2.3 and 2.5 km² there. `processed/` is left untouched
@@ -125,3 +139,57 @@ for comparison. Without a model the step only writes the piece tables
 Synthetic check (`tests/test_clean.py`): with labels taken from the known
 truth, cleaning removes more false-channel than true-channel pixels, and
 the only pixels it adds are the reconnected ones in the `filled` band.
+
+## Results (Ok Tedi–Fly and Bermejo, Nov 2026)
+
+**Labels.** Per river, 300 pieces from a stratified random sample (by reach,
+lobe or loop, and size) and 150 from a review round of kept pieces: 908
+labelled channel or not channel across both rivers (pieces marked unsure are
+not used). 16 early Ok Tedi labels no longer match a piece, because the
+corridor fixes (gap bridging, channel ends, smoothing) moved those stretches
+into the main channel.
+
+**Model.** One model for both rivers (`models/pieces_v3.joblib`; metrics in
+the JSON beside it). Before the review labels, grouped cross-validation
+gave accuracy 0.84 and AUC 0.91 on 534 labels (v2, without the history
+features: 0.83 and 0.90). By river (v2): Ok Tedi 0.88 (AUC 0.94), Bermejo
+0.82 (AUC 0.89). Trained on one river and scored on the other: Ok Tedi to
+Bermejo 0.66 (AUC 0.76; 37% of true channel pieces removed), Bermejo to Ok
+Tedi 0.79 (AUC 0.86). Training on both rivers improved each.
+
+**Cleaning** (model v3, before the review labels):
+
+| | Ok Tedi | Bermejo |
+|---|---|---|
+| Channel area removed, median reach-year | 0.9% | 1.9% |
+| 90th percentile | 7.8% | 9.9% |
+| Of the removed area, tiny bits | 2% | 2% |
+| Reconnected (filled) | 9 km² in 111 of 800 reach-years | 179 km² in 230 of 896 reach-years |
+| Area CV per reach, median: processed → cleaned | 0.094 → 0.072 | 0.116 → 0.101 |
+
+On the Ok Tedi the floodplain reaches (14–18) gain most: their CV falls by a
+third. The Bermejo's variability is mostly in the main channel itself,
+which cleaning does not touch.
+
+## Known limits
+
+- **What remains.** Occasional flicker of cut-off loops and side channels
+  (e.g. the Ok Tedi reach 19 oxbow returns in some years), bank-side water
+  in flood years, and bar pixels attached to the main thread in braided
+  reaches (inside the corridor, so never removed). These are short-lived
+  relative to the multi-year windows over which reworking is measured and
+  are expected to average out in the migration timescale T_CM; they were
+  accepted rather than tuned away (Nov 2026).
+- **Reconnected channel is inferred**, not observed: it is set in `channel`
+  and marked in `filled`. Analyses should be checked with and without it,
+  especially on the Bermejo's braided reaches, where it is largest.
+- **New rivers need labels.** Transfer between two rivers was weak (0.66–
+  0.79 accuracy), so label each new river (about 150 random and 150 review
+  pieces, roughly half an hour) and retrain on all rivers. Once several
+  rivers are labelled, the held-out-river score will show whether new
+  rivers still need their own labels.
+- **Label rule.** Channel = the wetted, active river (main channel, flowing
+  side channels and braid threads); oxbows count as not channel even where
+  still joined. This differs from the permissive rule in `process_masks`
+  (cut-off loops open at both ends are kept there), on purpose: the
+  extraction keeps candidates and the cleaning judges them.
